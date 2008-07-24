@@ -1,0 +1,18 @@
+VXI-11 for python
+
+Most was written by Spencer E. Olson <olsonse@umich.edu>
+The vxi11.x file is a modified version of the one from the vxi11 for linux
+package (and the author of that package borrowed it from somewhere else). 
+
+To generate the rpc protocol for VXI-11, the vxi11.x file was parsed and
+interpreted by the rpcgen.py script from 
+from the newpynfs package (version 20060822).  The generated VXI-11
+implementation subsequently depended on the rpc package that is also shipped
+with the newpynfs package.  The newpynfs package is written by:
+           Martin Murray <mmurray@deepthought.org>
+and        Fred Isaman   <iisaman@citi.umich.edu>
+Copyright (C) 2001 University of Michigan, Center for 
+                   Information Technology Integration
+
+I am including the rpc package from newpynfs here (but not rpcgen.py).  
+

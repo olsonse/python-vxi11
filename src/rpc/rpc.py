@@ -1,100 +1,35 @@
-# rpc.py - based on RFC 1831
-#
-# Requires python 2.3
-# 
-# Written by Fred Isaman <iisaman@citi.umich.edu>
-# Copyright (C) 2004 University of Michigan, Center for 
-#                    Information Technology Integration
-#
+from __future__ import with_statement
 
+import socket, select
 import struct
-import xdrlib
-import socket
-import select
 import threading
+import logging
+from collections import deque as Deque
+from errno import EINPROGRESS, EWOULDBLOCK
 
+import rpc_pack
 from rpc_const import *
 from rpc_type import *
-import rpc_pack
 
-# Import security flavors and store valid ones
-from rpcsec.sec_auth_none import SecAuthNone
-from rpcsec.sec_auth_sys import SecAuthSys
-supported = {'none' : SecAuthNone,
-             'sys'  : SecAuthSys }
-try:
-    from rpcsec.sec_auth_gss import SecAuthGss
-    supported['gss'] = SecAuthGss
-except ImportError:
+import security
+import rpclib
+
+log_p = logging.getLogger("rpc.poll") # polling loop thread
+log_t = logging.getLogger("rpc.thread") # handler threads
+
+# log_p.setLevel(logging.DEBUG)
+# log_t.setLevel(logging.DEBUG)
+
+LOOPBACK = "127.0.0.1"
+
+def inc_u32(i):
+    """Increment a 32 bit integer, with wrap-around."""
+    return int( (i+1) & 0xffffffff )
+
+class RPCError(Exception):
     pass
 
-RPCVERSION = 2
-
-if hasattr(select, "poll"):
-    _stdmask   = select.POLLERR | select.POLLHUP | select.POLLNVAL
-    _readmask  = select.POLLIN  | _stdmask
-    _writemask = select.POLLOUT | _stdmask
-    _bothmask  = select.POLLOUT | select.POLLIN | _stdmask
-else:
-    _readmask = 1
-    _writemask = 2
-    _bothmask = 3
-    select.POLLIN = 1
-    select.POLLOUT = 2
-    select.POLLERR = 4
-    select.POLLHUP = select.POLLNVAL = 0
-    
-    class my_poll(object):
-        """Emulate select.poll using select.select"""
-        def __init__(self):
-            self._in = []
-            self._out = []
-            self._err = []
-
-        def register(self, fd, eventmask=_bothmask):
-            if type(fd) != int:
-                fd = fd.fileno()
-            self.unregister(fd)
-            if eventmask & _readmask:
-                self._in.append(fd)
-            if eventmask & _writemask:
-                self._out.append(fd)
-            self._err.append(fd)
-
-        def unregister(self, fd):
-            if type(fd) != int:
-                fd = fd.fileno()
-            # Remove
-            if fd in self._in: self._in.remove(fd)
-            if fd in self._out: self._out.remove(fd)
-            if fd in self._err: self._err.remove(fd)
-
-        def poll(self, timeout=None):
-            # STUB - deal with timeout
-            read, write, err = select.select(self._in, self._out, self._err)
-            list = []
-            for fd in read:
-                mask = select.POLLIN
-                if fd in write:
-                    mask |= select.POLLOUT
-                    write.remove(fd)
-                if fd in err:
-                    mask |= select.POLLERR
-                    err.remove(fd)
-                list.append((fd, mask))
-            for fd in write:
-                mask = select.POLLOUT
-                if fd in err:
-                    mask |= select.POLLERR
-                    err.remove(fd)
-                list.append((fd, mask))
-            for fd in err:
-                mask = select.POLLOUT
-                list.append((fd, mask))
-            return list
-    select.poll = my_poll
-        
-class RPCError(Exception):
+class RPCTimeout(RPCError):
     pass
 
 class RPCAcceptError(RPCError):
@@ -108,9 +43,8 @@ class RPCAcceptError(RPCError):
 
     def __str__(self):
         if self.stat == PROG_MISMATCH:
-            return "RPCError: MSG_ACCEPTED: %s [%i,%i]" % \
-                   (accept_stat.get(self.stat, self.stat),
-                    self.low, self.high)
+            return "RPCError: MSG_ACCEPTED: PROG_MISMATCH [%i,%i]" % \
+                   (self.low, self.high)
         else:
             return "RPCError: MSG_ACCEPTED: %s" % \
                    accept_stat.get(self.stat, self.stat)
@@ -134,538 +68,852 @@ class RPCDeniedError(RPCError):
 
 ###################################################
 
-# Add some record marking functions to sockets
-# FRED - is there a cleaner (class based) way to do this?
+class FancyRPCUnpacker(rpc_pack.RPCUnpacker):
+    """RPC headers contain opaque credentials.  Try to de-opaque them."""
+    def _filter_opaque_auth(self, py_data):
+        # NOTE Can't use this in general, because GSS uses different
+        # encodings depending on circumstance.  Instead we call this
+        # from other filter as needed.
+        try:
+            klass = security.klass(py_data.flavor)
+        except:
+            # An unsupported security flavor.
+            # This will be dealt with by message handler.
+            return py_data
+        try:
+            body = klass.unpack_cred(py_data.body)
+            out = opaque_auth(py_data.flavor, body)
+            # HACK - lets other code know this has been expanded
+            out.opaque = False
+            return out
+        except:
+            # We had a bad XDR within GSS cred.  This shouldn't propagate up
+            # as bad XDR of RPC.  Instead, we just leave it as is.
+            return py_data
 
-def _recv_all(self, n):
-    """Receive n bytes, or raise an error"""
-    data = ""
-    while n > 0:
-        newdata = self.recv(n)
-        count = len(newdata)
-        if not count:
-            raise socket.error("Connection closed")
-        data += newdata
-        n -= count
-    return data
+    def filter_call_body(self, py_data):
+        # Can't overwrite py_data, so don't just do py_data.cred = ...
+        return call_body(py_data.rpcvers, py_data.prog, py_data.vers,
+                         py_data.proc,
+                         self._filter_opaque_auth(py_data.cred),
+                         py_data.verf)
 
-def _recv_record(self):
-    """Receive data sent using record marking standard"""
-    last = False
-    data = ""
-    while not last:
-        rec_mark = self.recv_all(4)
-        count = struct.unpack('>L', rec_mark)[0]
-        last = count & 0x80000000L
-        if last:
-            count &= 0x7fffffffL
-        data += self.recv_all(count)
-    return data
+class FancyRPCPacker(rpc_pack.RPCPacker):
+    """RPC headers contain opaque credentials which may have been expanded.
 
-def _send_record(self, data, chunksize=2048):
-    """Send data using record marking standard"""
-    dlen = len(data)
-    i = last = 0
-    while not last:
-        chunk = data[i:i+chunksize]
-        i += chunksize
-        if i >= dlen:
-            last = 0x80000000L
-        mark = struct.pack('>L', last | len(chunk))
-        self.sendall(mark + chunk)
+    Make sure they are put back to opaques.
+    """
+    def _filter_opaque_auth(self, py_data):
+        # NOTE Can't use this in general, because GSS uses different
+        # encodings depending on circumstance.  Instead we call this
+        # from other filter as needed.
+        if getattr(py_data, "opaque", True):
+            return py_data
+        # We don't use "try" block, since any exception is a bug
+        # that should be raised.
+        klass = security.klass(py_data.flavor)
+        return opaque_auth(py_data.flavor, klass.pack_cred(py_data.body))
 
-socket._socketobject.recv_all = _recv_all
-socket._socketobject.recv_record = _recv_record
-socket._socketobject.send_record = _send_record
+    def filter_call_body(self, py_data):
+        # Can't overwrite py_data, so don't just do py_data.cred = ...
+        return call_body(py_data.rpcvers, py_data.prog, py_data.vers,
+                         py_data.proc,
+                         self._filter_opaque_auth(py_data.cred),
+                         py_data.verf)
+        
+###################################################
+
+class DeferredData(object):
+    """Wait for data to arrive.
+
+    Thread 1 does:
+    defer = DeferredData()
+    start_another_thread(defer)
+    defer.wait()
+    # Now data field is accessible or exception has been raised
+
+    Thread 2 does:
+    # Access defer.msg if needed
+    defer.fill()
+    # Thread should no longer reference defer
+    """
+    def __init__(self, msg=None):
+        self._filled = threading.Event()
+        self.data = None
+        self._exception = None
+        self.msg = msg # Data that thread calling fill might need
+        
+    def wait(self, timeout=10):
+        """Wait for data to be filled in"""
+        self._filled.wait(timeout)
+        if not self._filled.isSet():
+            raise RPCTimeout
+        if self._exception is not None:
+            raise self._exception
+
+    def fill(self, data=None, exception=None):
+        """Fill with data, and flag that this has been done.
+
+        Caller should no longer reference the object afterwards.
+        """
+        self._exception = exception
+        self.data = data
+        self._filled.set()
+
+class Alarm(object):
+    """A method of notifying select loop that there is data waiting"""
+    def __init__(self, address):
+        self._queue = Deque()
+        self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._s.setblocking(0)
+        try:
+            self._s.connect(address)
+        except socket.error, e:
+            if e.args[0] in [EINPROGRESS, EWOULDBLOCK]:
+                # address has not yet called accept, since this is done in a
+                # single thread, so get "op in progress error".  When the
+                # receiving end calls accept, all is good.
+                pass
+            else:
+                raise
+
+    def buzz(self, command, info):
+        """Wake the polling loop, passing it info"""
+        self._queue.appendleft(info)
+        # Send one byte of data 'command' to wake select loop
+        # Note bytes sent are counted to determine how many items to pop
+        while (not self._s.send(command)):
+            # Just loop here until we actually send something
+            pass
+
+    def pop(self):
+        """Called by polling loop to grab the info passed in by buzz"""
+        return self._queue.pop()
+
+    def __getattr__(self, attr):
+        """Show socket interface"""
+        return getattr(self._s, attr)
+
+class Pipe(object):
+    """Groups a socket with its buffers.
+
+    We deal with records, packets, and bytes.
+
+    Records are the actual message strings that we want to send through the
+    pipe.  Records go in one end and come out the other.  However, because
+    all that *really* goes through is a stream of bytes, just sending the
+    records as is wouldn't work, since there would be no way to tell where
+    one record ends and another begins.
+
+    So record marking is used (rfc 1831 section 10), which breaks the
+    record into packets (called record fragments in the rfc), and precedes
+    each packet with a byte count and an end-of-record flag.
+
+    The raw byte stream sent is thus the packets with the interspersed
+    accounting information.
+
+    The general flow here is as follows:
+
+    server
+    The polling thread notices the Pipe has data waiting to be read.
+    So it calls recv_records, which reads the raw data and returns records.
+    The polling thread hands each record off to a worker thread.  That
+    thread, if it wishes to reply, calls push_record. This notifies the
+    polling thread, which calls pop_record to prepare for flush_pipe.
+
+    client
+    The client calls push_record, creates a DeferredData instance
+    associated with the xid, and calls its wait method.
+    Push_record notifies the polling thread, which calls pop_record to
+    prepare for flush_pipe, sending the call to the server.
+    Eventually the polling thread notices the Pipe has data waiting to be
+    read (a server reply), so it calls recv_records, which reads the raw data
+    and returns a record, which is eventually dumped into the DeferredData
+    structure via fill(), waking the original client thread
+    """
+    def __init__(self, socket, write_alarm):
+        self._s = socket
+        # Note the write queue is accessed by both main and worker threads,
+        # so uses thread-safe deque() struture.  The other buffers are only
+        # looked at by the main thread, so no locking is required.
+        self._write_queue = Deque() # Records waiting to be sent out
+        self._alarm = write_alarm # Way to notify we have data to write
+        self._write_buf = '' # Raw outgoing data
+        self._read_buf = '' # Raw incoming data
+        self._packet_buf = [] # Store packets read until have a whole record
+
+    def __getattr__(self, attr):
+        """Show socket interface"""
+        return getattr(self._s, attr)
+
+    def __str__(self):
+        return "pipe-%i" % self._s.fileno()
+
+    def recv_records(self, count):
+        """Pull up to count bytes from pipe, converting into records."""
+        # This is only called from main handler thread, so doesn't need locking
+        data = self._s.recv(count)
+        if not data:
+            # This indicates socket has closed
+            return None
+        out = []
+        self._read_buf += data
+        while self._read_buf:
+            buf = self._read_buf
+            if len(buf) < 4:
+                # We don't even have the packet length yet, wait for more data
+                break
+            packetlen = struct.unpack('>L', buf[0:4])[0]
+            last = 0x80000000L & packetlen
+            packetlen &= 0x7fffffffL
+            packetlen += 4 # Include size of record mark
+            if len(buf) < packetlen:
+                # We don't have a full packet yet, wait for more data
+                break
+            self._packet_buf.append(buf[4:packetlen])
+            self._read_buf = buf[packetlen:]
+            if last:
+                # We have a full RPC record.  Note this does not imply that
+                # self._read_buf is empty.
+                record = ''.join(self._packet_buf)
+                self._packet_buf = []
+                out.append(record)
+        return out
+
+    def push_record(self, record):
+        """Prepares handler thread to send record.
+
+        If None is sent, no further data will be accepted, and pipe will be
+        closed once previous data is flushed.
+        """
+        # This is called from worker threads, so needs locking.
+        # However, deque is thread safe, so all is good
+        self._write_queue.appendleft(record)
+        # Notify ConnectionHandler that there is data to write
+        self._alarm.buzz('\x00', self)
+
+    def pop_record(self, count):
+        """Pulls record off stack and places in write buffer.
+
+        Appropriate record marking is added.  This should be called once
+        for each push_record called.  This is handled by arranging to have
+        the function called each time the the polling loop responds to
+        self._alarm.buzz.
+        """
+        def add_record_marks(record, count):
+            """Given a record, convert it to actual stream to send over TCP"""
+            dlen = len(record)
+            i = last = 0
+            out = '' # FRED - use stringio here?
+            while not last:
+                chunk = record[i: i + count]
+                i += count
+                if i >= dlen:
+                    last = 0x80000000L
+                mark = struct.pack('>L', last | len(chunk))
+                out += mark + chunk
+            return out
+
+        record = self._write_queue.pop()
+        self._write_buf += add_record_marks(record, count)
+
+    def flush_pipe(self):
+        """Try to flush the write buffer.
+
+        Return True if succeeds, False if needs to be called again.
+
+        Note this only flushes the buffer of raw bytes waiting to be sent.
+        It does not look at the waiting stack of non-marked records.
+        """
+        if not self._write_buf:
+            raise RuntimeError
+        try:
+            count = self._s.send(self._write_buf)
+        except socket.error, e:
+            log_p.error("flush_pipe got exception %s" % str(e))
+            return True # This is to stop retries
+        self._write_buf = self._write_buf[count:]
+        return (not self._write_buf)
+
+class RpcPipe(Pipe):
+    """Hide pipe related xid handling.
+
+    The expected use is for a client thread to do:
+            xid = pipe.send_call()
+            reply = pipe.listen(xid)
+    A server thread will just do:
+            pipe.send_reply()
+    """
+    rpcversion = 2 # The RPC version that is used by default
+
+    def __init__(self, *args, **kwargs):
+        Pipe.__init__(self, *args, **kwargs)
+        self._pending = {} # {xid:defer}
+        self._lock = threading.Lock() # Protects fields below
+        self._xid = 0
+
+    def _get_xid(self):
+        with self._lock:
+            out = self._xid
+            self._xid = inc_u32(out)
+        return out
+
+    def listen(self, xid, timeout=None):
+        """Wait for a reply to a CALL."""
+        self._pending[xid].wait(timeout)
+        reply = self._pending[xid].data # This is set at end of self.rcv_reply
+        del self._pending[xid]
+        return reply
+
+    def rpc_send(self, rpc_msg, data=''):
+        """Send raw data over pipe using given rpc_msg"""
+        p = FancyRPCPacker()
+        p.pack_rpc_msg(rpc_msg)
+        header = p.get_buffer()
+        self.push_record(header + data)
+
+    def send_reply(self, xid, body, proc_response=""):
+        log_t.debug("send_reply\nbody = %r\ndata=%r" % (body, proc_response))
+        msg = rpc_msg(xid, rpc_msg_body(REPLY, rbody=body))
+        self.rpc_send(msg, proc_response)
+
+    def send_call(self, program, version, procedure, data, credinfo):
+        """Send a CALL, and store info needed to match and verify reply."""
+        sec = credinfo.sec
+        cred = sec.make_cred(credinfo)
+        body = call_body(self.rpcversion, program, version, procedure,
+                         cred, None)
+        xid = self._get_xid()
+        body.verf = sec.make_call_verf(xid, body)
+        msg = rpc_msg(xid, rpc_msg_body(CALL, body))
+        data = sec.secure_data(cred, data)
+        # Store info needed be receiving thread to match and verify reply
+        self._pending[xid] = DeferredData((cred, sec))
+        self.rpc_send(msg, data)
+        return xid
+
+    def rcv_reply(self, msg, msg_data):
+        """Do sec handling of reply, then hand it off to matching call event."""
+        try:
+            # This should match a CALL made with self.send_call
+            deferred = self._pending[msg.xid]
+        except IndexError:
+            log_t.warn("Reply with unexpected xid=%i" % msg.xid)
+            raise
+        exc = None # Exception that will be raised in calling thread
+        cred, sec = deferred.msg # This was set in self.send_call()
+        try:
+            sec.check_reply_verf(msg, cred, msg_data)
+        except Exception:
+            log_t.warn("Reply did not pass verifier checks", exc_info=True)
+            raise
+        if msg.stat == MSG_DENIED:
+            exc = RPCDeniedError(msg.rreply)
+        elif msg.reply_data.stat != SUCCESS:
+            exc = RPCAcceptError(msg.areply)
+        else:
+            try:
+                msg_data = sec.unsecure_data(cred, msg_data)
+            except Exception:
+                # Unsure what to do here.
+                # FRED - what is the point of verifier, if this can occur?
+                exc = RPCError("Failed to unsecure data in reply")
+        log_t.debug("Filling deferral %i" % msg.xid)
+        reply = (msg, msg_data) # The return value of self.listen()
+        deferred.fill(reply, exc)
 
 #################################################
 
-class RPCClient(object):
-    def __init__(self, host='localhost', port=51423,
-                 program=None, version=None, sec_list=None, timeout=15.0):
-        self.debug = 0
-        t = threading.currentThread()
-        self.lock = threading.Lock()
-        self.remotehost = host
-        self.remoteport = port
-        self.timeout = timeout
-        self._socket = {}
-        self.getsocket() # init socket, is this needed here?
-        self.ipaddress = self.socket.getsockname()[0]
-        self._rpcpacker = {t : rpc_pack.RPCPacker()}
-        self._rpcunpacker = {t : rpc_pack.RPCUnpacker('')}
+class ConnectionHandler(object):
+    """Common code for server and client.
+
+    Sets up polling and event dispatching, and deals with RPC headers, xids,
+    and record marking in the communication streams.
+
+    NOTE that the _event_* functions should not be called directly,
+    but only through start.  Thread safety depends on this.
+    """
+    def __init__(self):
+        self._stopped = False
+        # Set up polling lists
+        self.readlist = set()
+        self.writelist = set()
+        self.errlist = set()
+        # A list of all sockets we have open, indexed by fileno
+        self.sockets = {} # {fd: pipe}
+        # A list of the sockets set to listen for connections
+        self.listeners = set()
+
+        # Create internal server for alarm system to connect to
+        self.s = self.expose((LOOPBACK, 0), socket.AF_INET, False)
+        
+        # Set up alarm system, which is how other threads inform the polling
+        # thread that data is ready to be sent out
+        # NOTE that there are TWO sockets associated with alarm, one
+        # for each end of the connection.  Nasty bugs creep in here.
+        self._alarm = Alarm(self.s.getsockname())
+        self._alarm_poll = self._event_connect_incoming(self.s.fileno(),
+                                                        internal=True)
+
+        # Set up some constants that effect general behavior
+        self.rsize = 4096 # Read data in chunks of this size
+        self.wsize = 4098 # Read data in chunks of this size
+        self.rpcversions = (2,) # Supported RPC versions
+
+        # Dictionary {flavor: handler} used for server-side authentication
+        self.sec_flavors = security.instances()
+
+    def _buzz_write_ready(self, pipe):
+        """Pipe has data ready to be sent out"""
+        pipe.pop_record(self.wsize)
+        self.writelist.add(pipe.fileno())
+
+    def _buzz_new_socket(self, data):
+        """A new socket needs to be added"""
+        pipe, defer = data
+        fd = pipe.fileno()
+        log_p.info("Adding %i generated by another thread" % fd)
+        # Add to known connections
+        self.sockets[fd] = pipe
+        # Start listening on new connection
+        self.readlist.add(fd)
+        self.errlist.add(fd)
+        # Notify thread which created connection that it is now up
+        defer.fill()
+
+    def _buzz_stop(self, data):
+        """We want to exit the start loop"""
+        self._stopped = True
+
+    def start(self):
+        switch = {'\x00' : self._buzz_write_ready,
+                  '\x01' : self._buzz_new_socket,
+                  '\x02' : self._buzz_stop,
+                  }
+        while not self._stopped:
+            log_p.debug("Calling select")
+            log_p.log(5, "Sleeping for: %s, %s, %s" %
+                 (self.readlist, self.writelist, self.errlist))
+            r,w,e = select.select(self.readlist, self.writelist, self.errlist)
+            log_p.log(5, "Woke with: %s, %s, %s" % (r, w, e))
+            for fd in e:
+                log_p.warn(1, "polling error from %i" % fd)
+                # STUB - now what?
+            for fd in w:
+                self._event_write(fd)
+            for fd in r:
+                if fd in self.listeners:
+                    self._event_connect_incoming(fd)
+                elif fd == self._alarm_poll.fileno():
+                    commands = self._alarm_poll.recv(self.rsize)
+                    for c in commands:
+                        data = self._alarm.pop()
+                        switch[c](data)
+                else:
+                    try:
+                        data = self.sockets[fd].recv_records(self.rsize)
+                    except socket.error:
+                        data = None
+                    if data is not None:
+                        self._event_read(data, fd)
+                    else:
+                        self._event_close(fd)
+        for s in self.sockets.values():
+            s.close()
+
+    def stop(self):
+        self._alarm.buzz('\x02', None)
+
+    def _event_connect_incoming(self, fd, internal=False):
+        """Someone else is trying to connect to us (we act like server)."""
+        s = self.sockets[fd]
+        try:
+            if internal:
+                # We are accepting from the same thread that tried to connect.
+                # In linux this works, but in Windows it raises EWOULDBLOCK
+                # if we don't do this
+                s.setblocking(1)
+                csock, caddr = s.accept()
+                s.setblocking(0)
+            else:
+                csock, caddr = s.accept()
+        except socket.error, e:
+            log_p.error("accept() got error %s" % str(e))
+            return
+        csock.setblocking(0)
+        fd = csock.fileno()
+        pipe = self.sockets[fd] = RpcPipe(csock, self._alarm)
+        log_p.info("got connection from %s, assigned to fd=%i" %
+             (csock.getpeername(), fd))
+        # Start listening for data to come in on new connection
+        self.readlist.add(fd)
+        self.errlist.add(fd)
+        return pipe
+
+    def _event_close(self, fd):
+        """Close the connection, and remove references to it."""
+        log_p.info("Closing %i" % fd)
+        temp = set([fd])
+        self.writelist -= temp
+        self.readlist -= temp
+        self.errlist -= temp
+        self.sockets[fd].close()
+        del self.sockets[fd]
+
+    def _event_write(self, fd):
+        """Data is waiting to be written."""
+        if self.sockets[fd].flush_pipe():
+            self.writelist.remove(fd)
+            log_p.log(5, "Finished writing to %i" % fd)
+
+    def _event_read(self, records, fd):
+        """Data is waiting to be read.
+
+        For each full RPC record, then dispatch it to a thread.
+        """
+        s = self.sockets[fd]
+        for r in records:
+            log_p.log(5, "Received record from %i" % fd)
+            log_p.log(2, repr(r))
+            t = threading.Thread(target=self._event_rpc_record, args=(r, s))
+            t.setDaemon(True)
+            t.start()
+
+    def _event_rpc_record(self, record, pipe):
+        """Deal with an incoming RPC record.
+
+        This is run in its own thread.
+        """
+        log_t.log(5, "_event_rpc_record thread receives %r" % record)
+        # log_t.info("_event_rpc_record thread receives %r" % record)
+        try:
+            p = FancyRPCUnpacker(record)
+            msg = p.unpack_rpc_msg() # RPC header
+            msg_data = record[p.get_position():] # RPC payload
+            # Remember length of the header
+            msg.length = p.get_position()
+        except (rpc_pack.XDRError, EOFError), e:
+            log_t.warn("XDRError: %s, dropping packet" % e)
+            log_t.debug("unpacking raised the following error", exc_info=True)
+            self._notify_drop()
+            return # Drop incorrectly encoded packets
+        log_t.debug("MSG = %s" % str(msg))
+        log_t.debug("data = %r" % msg_data)
+        if msg.mtype == REPLY:
+            self._event_rpc_reply(msg, msg_data, pipe)
+        elif msg.mtype == CALL:
+            self._event_rpc_call(msg, msg_data, pipe)
+        else:
+            # Shouldn't get here, but doesn't hurt
+            log_t.error("Received rpc_record with msg.type=%i" % msg.type)
+            self._notify_drop()
+
+    def _event_rpc_reply(self, msg, msg_data, pipe):
+        """Deal with an incoming RPC REPLY.
+
+        msg is unpacked header,
+        msg_data is raw procedure data.
+        """
+        try:
+            pipe.rcv_reply(msg, msg_data)
+        except Exception:
+            self._notify_drop()
+
+    def _event_rpc_call(self, msg, msg_data, pipe):
+        """Deal with an incoming RPC CALL.
+        
+        msg is unpacked header, with length fields added.
+        msg_data is raw procedure data.
+        """
+        """Given an RPC record, returns appropriate reply
+
+        This is run in its own thread.
+        """
+        class XXX(object):
+            pass
+        call_info = XXX() # Store various info we need to pass to procedure
+        call_info.header_size = msg.length
+        call_info.payload_size = len(msg_data)
+        call_info.connection = pipe
+        notify = None
+        try:
+            # Check for reasons to DENY the call
+            try:
+                self._check_rpcvers(msg)
+                call_info.credinfo = self._check_auth(msg, msg_data)
+            except rpclib.RPCFlowContol:
+                raise
+            except Exception:
+                log_t.warn("Problem with incoming call, returning AUTH_FAILED",
+                           exc_info=True)
+                raise rpclib.RPCDeniedReply(AUTH_ERROR, AUTH_FAILED)
+            # Call has been ACCEPTED, now check for reasons not to succeed
+            sec = call_info.credinfo.sec
+            msg_data = sec.unsecure_data(msg.body.cred, msg_data)
+            if not self._check_program(msg.prog):
+                log_t.warn("PROG_UNAVAIL, do not support prog=%i" % msg.prog)
+                raise rpclib.RPCUnsuccessfulReply(PROG_UNAVAIL)
+            low, hi = self._version_range(msg.prog)
+            if not self._check_version(low, hi, msg.vers):
+                log_t.warn("PROG_MISMATCH, do not support vers=%i" % msg.vers)
+                raise rpclib.RPCUnsuccessfulReply(PROG_MISMATCH, (low, hi))
+            method = self._find_method(msg)
+            if method is None:
+                log_t.warn("PROC_UNAVAIL for vers=%i, proc=%i" %
+                           (msg.vers, msg.proc))
+                raise rpclib.RPCUnsuccessfulReply(PROC_UNAVAIL)
+            # Everything looks good at this layer, time to do the call
+            tuple = method(msg_data, call_info)
+            if len(tuple) == 2:
+                status, result = tuple
+            else:
+                status, result, notify = tuple
+            if result is None:
+                result = ''
+            if not isinstance(result, basestring):
+                raise TypeError("Expected string")
+            # status, result = method(msg_data, call_info)
+            log_t.debug("Called method, got %r, %r" % (status, result))
+        except rpclib.RPCDrop:
+            # Silently drop the request
+            self._notify_drop()
+            return
+        except rpclib.RPCFlowContol, e:
+            body, data = e.body()
+        except Exception:
+            log_t.warn("Unexpected exception", exc_info=True)
+            body, data = rpclib.RPCUnsuccessfulReply(SYSTEM_ERR).body()
+        else:
+            try:
+                data = sec.secure_data(msg.body.cred, result)
+                verf = sec.make_reply_verf(msg.body.cred, status)
+                areply = accepted_reply(verf, rpc_reply_data(status, ''))
+                body = reply_body(MSG_ACCEPTED, areply=areply)
+            except Exception:
+                body, data = rpclib.RPCUnsuccessfulReply(SYSTEM_ERR).body()
+        pipe.send_reply(msg.xid, body, data)
+        if notify is not None:
+            notify()
+
+    def _notify_drop(self):
+        """Debugging hook called when a request is dropped."""
+        log_t.warn("Dropped request")
+
+    def _find_method(self, msg):
+        """Returns function that should handle an incoming call.
+
+        Returns None if no handler can be found.
+        Needs to be implemented by subclass if will be used as server.
+        """
+        raise NotImplementedError
+
+    def _version_range(self, prog):
+        """Returns pair of min and max supported versions for given program.
+
+        We assume that all versions between min and max ARE supported.
+        Needs to be implemented by subclass if will be used as server.
+        """
+        raise NotImplementedError
+
+    def _check_program(self, prog):
+        """Returns True if call program is supported, False otherwise.
+
+        Needs to be implemented by subclass if will be used as server.
+        """
+        raise NotImplementedError
+
+    def _check_rpcvers(self, msg):
+        """Returns True if rpcvers is ok, otherwise sends out MSG_DENIED"""
+        if msg.rpcvers not in self.rpcversions:
+            log_t.warn("RPC_MISMATCH, do not support vers=%i" % msg.rpcvers)
+            raise rpclib.RPCDeniedReply(RPC_MISMATCH,
+                                        (min(self.rpcversions),
+                                         max(self.rpcversions)))
+
+    def _check_auth(self, msg, data):
+        """Returns security module to use if call processing should continue,
+
+        otherwise returns None.
+        Note that it is possible for security module to hijack call processing.
+        """
+        # Check that flavor is supported
+        try:
+            sec = self.sec_flavors[msg.cred.flavor]
+        except KeyError:
+            log_t.warn("AUTH_ERROR: Unsupported flavor %i" % msg.cred.flavor)
+            if msg.proc == 0 and msg.cred.flavor == AUTH_NONE:
+                # RFC 1831 section 11.1 says "by convention" should allow this
+                log_t.warn("Allowing NULL proc through anyway")
+                sec = security.klass(AUTH_NONE)()
+            else:
+                raise rpclib.RPCDeniedReply(AUTH_ERROR, AUTH_FAILED)
+        # Call flavor specific authority checks
+        return sec.check_auth(msg, data)
+
+        # What incoming flavors do I allow?
+        #    How does server learn/change these defaults
+
+        # For AUTH_NONE:
+        #   return True - note 11.1 says "by convention" should
+        #   allow AUTH_NONE, at least for proc==0
+
+        # For AUTH_SYS:
+        #    check machinename, mode - again how is accept list set on server?
+        
+        # For GSS:
+        #   illegal enum values should return AUTH_BADCRED
+        #      this will be noticed by XDR unpack failing, which means
+        #      type(cred.body) == str
+        #   check gss_version, fail with AUTH_BADCRED
+        #   check allows service - again how does server set?
+        #   check context handle - what does this mean?
+        #      see 5.3.3.3, we maintain list of contexts we are in session
+        #      with, if not in list, return CREDPROBLEM
+        #      if security credentials expire, return CTXPROBLEM
+        #   check header checksum in verf, failure returns CREDPROBLEM
+        #   check seq_num in cred, silently drop repeats,
+        #       return CTXPROBLEM if exceeds window
+        #   check seq_num in data, return GARBAGE_ARGS if mismatches cred
+        #   check gss_proc==DATA, else:
+        #       if proc==0, handle elsewhere
+        #       else return AUTH_BADCRED
+        return True
+    
+    def connect(self, address, secure=False):
+        """Connect to given address, returning new pipe
+
+        If secure==True, will bind local asocket to a port < 1024.
+        """
+        log_t.info("Called connect(%r)" % (address,))
+        af = socket.AF_INET
+        if address[0].find(':') != -1:
+            af = socket.AF_INET6
+        s = socket.socket(af, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if secure:
+            self.bindsocket(s)
+        s.connect(address)
+        s.setblocking(0)
+        pipe = RpcPipe(s, self._alarm)
+        # Tell polling loop about the new socket
+        defer = DeferredData()
+        self._alarm.buzz('\x01', (pipe, defer))
+        # Wait until polling loop knows about new socket
+        defer.wait()
+        return pipe
+
+    def bindsocket(self, s, port=0):
+        """Scan up through ports, looking for one we can bind to"""
+        # This is necessary when we need to use a 'secure' port
+        using = port
+        while 1:
+            try:
+                s.bind(('', using))
+                return
+            except socket.error, why:
+                if why[0] == errno.EADDRINUSE:
+                    using += 1
+                    if port < 1024 <= using:
+                        # If we ask for a secure port, make sure we don't
+                        # silently bind to a non-secure one
+                        raise
+                else:
+                    raise
+
+
+    def expose(self, address, af, safe=True):
+        """Start listening for incoming connections on the given address"""
+        s = socket.socket(af, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(address)
+        s.setblocking(0)
+        s.listen(5)
+        self.listeners.add(s.fileno()) # XXX BUG - never removed
+        if safe:
+            # Tell polling loop about the new socket
+            defer = DeferredData()
+            self._alarm.buzz('\x01', (s, defer))
+            # Wait until polling loop knows about new socket
+            defer.wait()
+        else:
+            # This should only be called before start is run
+            self.readlist.add(s.fileno())
+            self.errlist.add(s.fileno())
+            # A list of all sockets we have open, indexed by fileno
+            self.sockets[s.fileno()] = s
+        return s
+            
+    def make_call_function(self, pipe, procedure, prog, vers):
+        def call(data, credinfo, proc=None, timeout=15.0):
+            if proc is None:
+                proc = procedure
+            xid = self.send_call(pipe, proc, data, credinfo, prog, vers)
+            header, data = pipe.listen(xid, timeout)
+            # XXX STUB - do header checking
+            return header, data
+        return call
+    
+    def listen(self, pipe, xid):
+        # STUB - should be overwritten by subclass
+        header, data = pipe.listen(xid)
+        print "HEADER", header
+        print "DATA", repr(data)
+
+#################################################
+
+class Server(ConnectionHandler):
+    def __init__(self, prog, versions, port, interface=''):
+        ConnectionHandler.__init__(self)
+        self.prog = prog
+        self.versions = versions # List of supported versions of prog
+        self.default_cred = security.CredInfo()
+        try:
+            # This listens on both AF_INET and AF_INET6
+            self.expose((interface, port), socket.AF_INET6, False)
+        except:
+            # ipv6 not supported, fall back to ipv4
+            self.expose((interface, port), socket.AF_INET, False)
+
+    def _check_program(self, prog):
+        return (self.prog == prog)
+
+    def _check_version(self, low, hi, vers):
+        return (low <= vers <= hi)
+
+    def _version_range(self, prog):
+        return (min(self.versions), max(self.versions))
+
+    def _find_method(self, msg):
+        method = getattr(self, 'handle_%i' % msg.proc, None)
+        if method is not None:
+            return method
+        method = getattr(self, 'handle_%i_v%i' % (msg.proc, msg.vers), None)
+        return method
+
+class Client(ConnectionHandler):
+    def __init__(self, program=None, version=None, secureport=False):
+        ConnectionHandler.__init__(self)
         self.default_prog = program
         self.default_vers = version
-        self.xid = 0L
-        self._xidlist = {}
-        if sec_list is None:
-            sec_list = [SecAuthNone()]
-        self.sec_list = sec_list
-        self._init_security(self.sec_list) # Note this can make calls
-        self.security = sec_list[0]
+        self.default_cred = security.CredInfo()
+        self.secureport = secureport
 
-    def _init_security(self, list):
-        # Each element of list must have functions:
-        # initialize, secure_data, make_cred, make_verf
-        for flavor in list:
-            self.security = flavor
-            flavor.initialize(self)
+        # Start polling
+        t = threading.Thread(target=self.start, name="PollingThread")
+        t.setDaemon(True)
+        t.start()
 
-    def getsocket(self):
-        t = threading.currentThread()
-        self.lock.acquire()
-        if t in self._socket:
-            out = self._socket[t]
-        else:
-            out = self._socket[t] = socket.socket(socket.AF_INET,
-                                                  socket.SOCK_STREAM)
-            # out.bind
-            out.connect((self.remotehost, self.remoteport))
-            out.settimeout(self.timeout)
-        self.lock.release()
-        return out
-
-    socket = property(getsocket)
-
-    def getrpcpacker(self):
-        t = threading.currentThread()
-        self.lock.acquire()
-        if t in self._rpcpacker:
-            out = self._rpcpacker[t]
-        else:
-            out = self._rpcpacker[t] = rpc_pack.RPCPacker()
-            self._rpcunpacker[t] = rpc_pack.RPCUnpacker('')
-        self.lock.release()
-        return out
-
-    def getrpcunpacker(self):
-        t = threading.currentThread()
-        self.lock.acquire()
-        if t in self._rpcunpacker:
-            out = self._rpcunpacker[t]
-        else:
-            self._rpcpacker[t] = gss_pack.GSSPacker()
-            out = self._rpcunpacker[t] = gss_pack.GSSUnpacker('')
-        self.lock.release()
-        return out
-
-    class XidCache(object):
-        def __init__(self, header, data, cred=None, proc=1):
-            self.header = header # packed call header
-            self.data = data     # secured call data
-            self.cred = cred     # unpacked opaque_auth in header
-            self.rhead = None    # unpacked reply header
-            self.rdata = None    # unsecured reply data
-            self.proc = proc     # unpacked proc from header
-
-        def __repr__(self):
-            return "%s\n%s" % (self.header, self.data)
-
-    def add_outstanding_xids(self, xid, header, data, cred, proc):
-        t = threading.currentThread()
-        self.lock.acquire()
-        if t in self._xidlist:
-            if xid in self._xidlist[t]: raise
-            self._xidlist[t][xid] = self.XidCache(header, data, cred, proc)
-        else:
-            self._xidlist[t] = {xid : self.XidCache(header, data, cred, proc)}
-        self.lock.release()
-
-    def get_outstanding_xids(self):
-        t = threading.currentThread()
-        self.lock.acquire()
-        out = self._xidlist[t]
-        self.lock.release()
-        return out
-
-    def reconnect(self):
-        t = threading.currentThread()
-        self.lock.acquire()
-        self._socket[t].close()
-        out = self._socket[t] = socket.socket(socket.AF_INET,
-                                              socket.SOCK_STREAM)
-        # out.bind
-        out.connect((self.remotehost, self.remoteport))
-        out.settimeout(self.timeout)
-        self.lock.release()
-        return out
-        
-    def send(self, procedure, data='', program=None, version=None):
-        """Send an RPC call to the server
-
-        Takes as input packed arguments
-        """
+    def send_call(self, pipe, procedure, data='', credinfo=None,
+                  program=None, version=None):
         if program is None: program = self.default_prog
         if version is None: version = self.default_vers
         if program is None or version is None:
-            raise RPCError("Bad program/version: %s/%s" % (program, version))
+            raise Exception("Badness")
+        if credinfo is None:
+            credinfo = self.default_cred
+        # XXX What to do if cred not initialized?  Currently send_call
+        # does not block, but the call to init_cred will block.  Apart
+        # from that, this is a logical place to do the init.
+        return pipe.send_call(program, version, procedure, data, credinfo)
 
-        xid = self.get_new_xid()
-        header, cred = self.get_call_header(xid, program, version, procedure)
-        data = self.security.secure_data(data, cred)
-        try:
-            if self.debug: print "send %i" % xid
-            self.socket.send_record(header + data)
-        except socket.timeout:
-            raise
-        except socket.error, e:
-            print "Got error:", e
-            if self.debug: print "resend", xid
-            try:
-                self.reconnect().send_record(header + data)
-            except socket.error:
-                self.reconnect()
-                raise
-        self.add_outstanding_xids(xid, header, data, cred, procedure)
-        return xid
-
-    def listen(self, xid):
-        # Exists (per thread) list of outstanding xid/seq pairs
-        # If xid not on list, return error.
-        # Listen until get reply with given xid.  Cache others received
-        # on list.  Return error if get one not on list.
-        if self.debug: print "listen", xid
-        list = self.get_outstanding_xids()
-        if xid not in list:
-            raise
-        done = False
-        rdata = list[xid].rdata
-        if rdata is not None:
-            rhead = list[xid].rhead
-            done = True
-        while not done:
-            try:
-                reply = self.socket.recv_record()
-            except socket.timeout:
-                raise
-            except socket.error, e:
-                print "Got error:", e
-                if self.debug: print "relisten", xid
-                try:
-                    s = self.reconnect()
-                    s.send_record(list[xid].header + list[xid].data)
-                    reply = s.recv_record()
-                except socket.error:
-                    self.reconnect()
-                    raise
-            p = self.getrpcunpacker()
-            p.reset(reply)
-            rhead = p.unpack_rpc_msg()
-            rxid = rhead.xid
-            if rxid not in list:
-                raise RPCError("Got reply xid %i, expected %i" % \
-                               (rxid, xid))
-            if list[rxid].rhead is not None:
-                raise RPCError("Duplicated reply xid %i" % rxid)
-            rdata = reply[p.get_position():]
-            try:
-                # BUG?, should use rhead credentials?
-                rdata = self.security.unsecure_data(rdata, list[rxid].cred)
-            except:
-                if 0:
-                    # need for servers that don't add gss checksum to errors
-                    pass
-                else:
-                    raise
-            list[rxid].rhead = rhead
-            list[rxid].rdata = rdata
-            if rxid == xid:
-                done = True
-        out = list[xid]
-        del list[xid]
-        self.check_reply(out)
-        return rdata
-
-    def call(self, procedure, data='', program=None, version=None):
-        """Make an RPC call to the server
-
-        Takes as input packed arguments
-        Returns packed results
-        """
-        xid = self.send(procedure, data, program, version)
-        return self.listen(xid)
-
-    def get_new_xid(self): # Thread safe
-        self.lock.acquire()
-        self.xid += 1
-        if self.xid >= 0x100000000:
-            self.xid = 0
-        out = self.xid
-        self.lock.release()
-        return out
-
-    # Because some security flavors use partial packing info to determine
-    # verf, can't call packer.pack_rpc_msg.
-    def get_call_header(self, xid, prog, vers, proc): # THREAD SAFE
-        p = self.getrpcpacker()
-        p.reset()
-        cred = self.security.make_cred()
-        p.pack_uint(xid)
-        p.pack_enum(CALL)
-	p.pack_uint(RPCVERSION)
-	p.pack_uint(prog)
-	p.pack_uint(vers)
-	p.pack_uint(proc)
-	p.pack_opaque_auth(cred)
-        verf = self.security.make_verf(p.get_buffer())
-        p.pack_opaque_auth(verf)
-        return p.get_buffer(), cred
-
-    def check_reply(self, cache_data): # THREAD SAFE
-        """Looks at rpc_msg reply and raises error if necessary
-
-        xid has already been checked
-        """
-        msg = cache_data.rhead.body
-        if msg.mtype != REPLY:
-            raise RPCError("Msg was not a REPLY")
-        msg = msg.rbody
-        if msg.stat == MSG_DENIED:
-            # Do more here
-            raise RPCDeniedError(msg.rreply)
-        elif msg.areply.reply_data.stat != SUCCESS:
-            raise RPCAcceptError(msg.areply)
-        #STUB
-        self.security.check_verf(msg.areply.verf, cache_data.cred)
-            
-###################################################
-
-class Server(object):
-    def __init__(self, host='', port=51423, name="SERVER"):
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.s.bind((host, port))
-        self.port = self.s.getsockname()[1]
-        self.s.setblocking(0)
-        # Set up poll object
-        self.p = select.poll()
-        self.p.register(self.s, _readmask)
-        self.name = name
-
-    def run(self, debug=0):
-        while 1:
-            if debug: print "%s: Calling poll" % self.name
-            res = self.p.poll()
-            if debug: print "%s: %s" % (self.name, res)
-            for fd, event in res:
-                if debug:
-                    print "%s: Handling fd=%i, event=%x" % \
-                          (self.name, fd, event)
-                if event & select.POLLHUP:
-                    self.event_hup(fd)
-                elif event & select.POLLNVAL:
-                    if debug: print "%s: POLLNVAL for fd=%i" % (self.name, fd)
-                    self.p.unregister(fd)
-                elif event & ~(select.POLLIN | select.POLLOUT):
-                    print "%s: ERROR: event %i for fd %i" % \
-                          (self.name, event, fd)
-                    self.event_error(fd)
-                else:
-                    if event & select.POLLOUT:
-                        self.event_write(fd)
-                    # This must be last since may call close
-                    if event & select.POLLIN:
-                        if fd == self.s.fileno():
-                            self.event_connect(fd)
-                        else:
-                            data = self.sockets[fd].recv(4096)
-                            if data:
-                                self.event_read(fd, data)
-                            else:
-                                self.event_close(fd)
-
-class RPCServer(Server):
-    def __init__(self, prog=10, vers=4, host='', port=51423):
-        Server.__init__(self, host, port)
-        self.rpcpacker =  rpc_pack.RPCPacker()
-        self.rpcunpacker = rpc_pack.RPCUnpacker('')
-        self.prog = prog
-        self.vers = vers # FRED - this could be more general
-        self.security = {AUTH_NONE: SecAuthNone(),
-                         AUTH_SYS: SecAuthSys(),
-                         RPCSEC_GSS: SecAuthGss(),
-                         }
-        self.readbufs = {}
-        self.writebufs = {}
-        self.packetbufs = {} # store packets read until have a whole record
-        self.recordbufs = {} # write buffer for outgoing records
-        self.sockets = {}
-        self.s.listen(5)
-
-    def handle_0(self, data, cred):
-        if data != '':
-            return GARBAGE_ARGS, ''
-        else:
-            return SUCCESS, ''
-    
-    def event_connect(self, fd, debug=0):
-        csock, caddr = self.s.accept()
-        csock.setblocking(0)
-        if debug:
-            print "SERVER: got connection from %s, " \
-                  "assigned to fd=%i" % \
-                  (csock.getpeername(), csock.fileno())
-        self.p.register(csock, _readmask)
-        cfd = csock.fileno()
-        self.readbufs[cfd] = ''
-        self.writebufs[cfd] = ''
-        self.packetbufs[cfd] = []
-        self.recordbufs[cfd] = []
-        self.sockets[cfd] = csock
-        
-    def event_read(self, fd, data, debug=0):
-        """Reads incoming record marked packets
-
-        Also responds to command codes sent as encoded integers
-        """
-        if debug: print "SERVER: In read event for %i" % fd
-        self.readbufs[fd] += data
-        loop = True
-        while loop:
-            loop = False
-            str = self.readbufs[fd]
-            if len(str) >= 4:
-                packetlen = struct.unpack('>L', str[0:4])[0]
-                last = 0x80000000L & packetlen
-                packetlen &= 0x7fffffffL
-                if len(str) >= 4 + packetlen:
-                    self.packetbufs[fd].append(str[4:4 + packetlen])
-                    self.readbufs[fd] = str[4 + packetlen:]
-                    if self.readbufs[fd]:
-                        loop = True # We've received data past last 
-                    if last:
-                        if debug: print "SERVER: Received record from %i" % fd
-                        recv_data = ''.join(self.packetbufs[fd])
-                        self.packetbufs[fd] = []
-                        if len(recv_data) == 4:
-                            reply = self.event_command(fd, struct.unpack('>L', recv_data)[0])
-                        else:
-                            # All handle_* functions are called in compute_reply
-                            reply = self.compute_reply(recv_data)
-                        if reply is not None:
-                            self.recordbufs[fd].append(reply)
-                            self.p.register(fd, _bothmask)
-
-    def event_write(self, fd, chunksize=2048, debug=0):
-        if debug: print "SERVER: In write event for %i" % fd
-        if self.writebufs[fd]:
-            if debug: print "  writing from writebuf"
-            count = self.sockets[fd].send(self.writebufs[fd])
-            self.writebufs[fd] = self.writebufs[fd][count:]
-            # check if done?
-        elif self.recordbufs[fd]:
-            if debug: print "  writing from recordbuf"
-            data = self.recordbufs[fd][0]
-            chunk = data[:chunksize]
-            if len(data) > chunksize:
-                last = 0
-                self.recordbufs[fd][0] = data[chunksize:]
-            else:
-                last = 0x80000000L
-                del self.recordbufs[fd][0]
-            mark = struct.pack('>L', last | len(chunk))
-            self.writebufs[fd] = (mark + chunk)
-            # Duplicated code
-            count = self.sockets[fd].send(self.writebufs[fd])
-            self.writebufs[fd] = self.writebufs[fd][count:]
-        else:
-            if debug: print "  done writing"
-            self.p.register(fd, _readmask)
-
-    def event_command(self, cfd, comm, debug=0):
-        if debug:
-            print "SERVER: command = %i, cfd = %i" % (comm, cfd)
-        if comm == 0: # Turn off server
-            self.compute_reply = lambda x: None
-            return '\0'*4
-        elif comm == 1: # Turn server on
-            self.compute_reply = self.__compute_reply_orig
-            return '\0'*4
-
-    def event_close(self, fd, debug=0):
-        if debug:
-            print "SERVER: closing %i" % fd
-        self.event_error(fd)
-
-    def event_error(self, fd):
-        self.p.unregister(fd)
-        self.sockets[fd].close()
-        del self.readbufs[fd]
-        del self.writebufs[fd]
-        del self.packetbufs[fd]
-        del self.recordbufs[fd]
-        del self.sockets[fd]
-        
-    event_hup = event_error
-
-    def compute_reply(self, recv_data):
-        # Decode RPC specific info
-        self.rpcunpacker.reset(recv_data)
-        try:
-            recv_msg = self.rpcunpacker.unpack_rpc_msg()
-        except xdrlib.Error, e:
-            print "XDRError", e
-            return
-        if recv_msg.body.mtype != CALL:
-            print "Received a REPLY, expected a CALL"
-            return
-        # Check for reasons to deny the call
-        call = recv_msg.body.cbody
-        cred = call.cred
-        flavor = cred.flavor
-        #print call
-        reply_stat = MSG_ACCEPTED
-        areply = rreply = None
-        proc_response = ''
-        class C(object):
-            pass
-        data = C()
-        if call.rpcvers != RPCVERSION:
-            data.low = data.high = RPCVERSION
-            rreply = rejected_reply(RPC_MISMATCH, mismatch_info=data)
-            reply_stat = MSG_DENIED
-        elif flavor not in self.security: # STUB
-            # Auth checking
-            rreply = rejected_reply(AUTH_ERROR, astat=AUTH_FAILED)
-            reply_stat = MSG_DENIED
-        # At this point recv_msg has been accepted
-        # Check for reasons to fail before calling handle_*
-        meth_data = recv_data[self.rpcunpacker.get_position():]
-        meth_data = self.security[flavor].unsecure_data(meth_data, cred)
-        if rreply:
-            pass
-        elif self.prog != call.prog:
-            verf = self.security[flavor].make_reply_verf(cred, PROG_UNAVAIL)
-            data.stat = PROG_UNAVAIL
-            areply = accepted_reply(verf, data)
-        elif self.vers != call.vers:
-            verf = self.security[flavor].make_reply_verf(cred, PROG_MISMATCH)
-            data.stat = PROG_MISMATCH
-            data.mismatch_info = C()
-            data.mismatch_info.low = data.mismatch_info.high = self.vers
-            areply = accepted_reply(verf, data)
-        elif not hasattr(self, "handle_%i" % call.proc):
-            verf = self.security[flavor].make_reply_verf(cred, PROG_UNAVAIL)
-            data.stat = PROC_UNAVAIL
-            areply = accepted_reply(verf, data)
-        # Call appropriate handle_*
-        else:
-            method = getattr(self, "handle_%i" % call.proc)
-            a_stat, proc_response = method(meth_data, cred)
-            verf = self.security[flavor].make_reply_verf(cred, a_stat)
-            if a_stat == SUCCESS:
-                proc_response = self.security[flavor].secure_data(proc_response, cred)
-            data.stat = a_stat
-            data.results = ''
-            areply = accepted_reply(verf, data)
-        # Build reply
-        body = reply_body(reply_stat, areply, rreply)
-        data = C()
-        data.mtype = REPLY
-        data.rbody = body
-        msg = rpc_msg(recv_msg.xid, data)
-        self.rpcpacker.reset()
-        self.rpcpacker.pack_rpc_msg(msg)
-        return self.rpcpacker.get_buffer() + proc_response
-
-    __compute_reply_orig = compute_reply
+#################################################

@@ -1,3 +1,8 @@
+/* FRED - This is taken from RFC1831, except that all the unnamed
+ * unions and structures have been named (which makes the resulting code
+ * MUCH easier to work with).
+ */
+
 enum auth_flavor {
 	AUTH_NONE  = 0,
 	AUTH_SYS   = 1,
@@ -64,13 +69,15 @@ enum auth_stat {
 
 struct rpc_msg {
 	unsigned int xid;
-	union switch (msg_type mtype) {
+	rpc_msg_body body;
+};
+
+union rpc_msg_body switch (msg_type mtype) {
 	case CALL:
 		call_body cbody;
 	case REPLY:
 		reply_body rbody;
-	} body;
-};
+}; 
 
 struct call_body {
 	unsigned int rpcvers; /* must be equal to two (2) */
@@ -83,37 +90,46 @@ struct call_body {
 };
 
 union reply_body switch (reply_stat stat) {
- case MSG_ACCEPTED:
-	 accepted_reply areply;
- case MSG_DENIED:
-	 rejected_reply rreply;
+	case MSG_ACCEPTED:
+		accepted_reply areply;
+	case MSG_DENIED:
+		rejected_reply rreply;
 }; /* Note RFC has 'reply' here, which seems against XDR spec */
 
-struct accepted_reply {
-	opaque_auth verf;
-	union switch (accept_stat stat) {
+struct rpc_mismatch_info {
+	unsigned int low;
+	unsigned int high;
+};
+
+union rpc_reply_data switch (accept_stat stat) {
 	case SUCCESS:
 		opaque results[0];
 		/*
 		 * procedure specific results start here
 		 */
 	case PROG_MISMATCH:
-		struct {
-			unsigned int low;
-			unsigned int high;
-		} mismatch_info;
+		rpc_mismatch_info mismatch_info;
 	default:
 		void;
-	} reply_data;
+};
+
+struct accepted_reply {
+	opaque_auth verf;
+	rpc_reply_data reply_data;
 };
 
 /* FRED - this had two conflicting 'stat' variables.  One has been renamed. */
 union rejected_reply switch (reject_stat stat) {
  case RPC_MISMATCH:
-	 struct {
-		 unsigned int low;
-		 unsigned int high;
-	 } mismatch_info;
+	rpc_mismatch_info mismatch_info;
  case AUTH_ERROR:
 	 auth_stat astat;
+};
+
+struct authsys_parms {
+	unsigned int stamp;
+	string machinename<255>;
+	unsigned int uid;
+	unsigned int gid;
+	unsigned int gids<16>;
 };

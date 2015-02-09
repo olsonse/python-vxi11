@@ -20,7 +20,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 """
 
-from vxi11.vxi11_user import *
+import vxi11
 import time
 try:
     from numpy import double
@@ -28,13 +28,14 @@ try:
 except:
     print 'getCurve will not work since numpy is not found'
 
-class TDS5000B(VXI11Link):
+class TDS5000B(vxi11.Link):
     """VXI-11 Link for controlling the TDS5000B."""
+    IDN = 'unknown'
 
     def __init__(self, link=None, host=None):
         if host is not None:
-            link = VXI11Client(host=host).open_link()
-        VXI11Link.__init__(self,link=link)
+            link = vxi11.Client(host=host).open_link()
+        super(TDS5000B,self).__init__(link=link)
 
     def waitforACQStop(self):
         """waiting (specifically for the TDS5000) to stop acquisitions."""

@@ -31,3 +31,7 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
 from TDS5000B import TDS5000B
+
+registered = {
+  TDS5000B.IDN : TDS5000B,
+}

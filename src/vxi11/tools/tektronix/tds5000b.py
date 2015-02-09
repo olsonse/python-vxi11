@@ -30,7 +30,7 @@ except:
 
 class TDS5000B(vxi11.Link):
     """VXI-11 Link for controlling the TDS5000B."""
-    IDN = 'unknown'
+    model = 'tds5000b'
 
     def __init__(self, link=None, host=None):
         if host is not None:

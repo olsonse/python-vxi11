@@ -1,14 +1,6 @@
 """
-This is a collection of tools that use the VXI-11 protocol to communicate with
-specific instruments.  Each of these tools simplifies/organizes routine
-(GPIB) commands that are used for the particular instrument.  
+VXI-extension module for controlling/interacting with Anritsu MS9740A OSA
 
-
-Tool            Instrument
-----------------------------------------------------
-TDS5000B        Tektronix TDS5000B oscilloscope
-
-A sample program that stores traces from the scope to file in a loop.
 
 Written by Spencer E. Olson <olsonse@umich.edu>
 Copyright (C) 2008 Spencer E. Olson
@@ -28,24 +20,19 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 """
 
+import vxi11
+import time
+try:
+  from numpy import double
+  from numpy import r_
+except:
+  print 'getCurve will not work since numpy is not found'
 
+class MS9740A(vxi11.Link):
+    """VXI-11 Link for controlling the MS9740A."""
+    IDN = 'ms9740a'
 
-import tektronix
-import anritsu
-
-generators = [
-  anritsu,
-  tektronix,
-]
-
-def get(idn):
-  """
-  Toplevel tool link generator.
-  """
-
-  for g in generators:
-    G = g.get(idn)
-    if G: return G
-
-  # default generator is to just return a raw vxi11.Link
-  return lambda x:x
+    def __init__(self, link=None, host=None):
+        if host is not None:
+            link = vxi11.Client(host=host).open_link()
+        super(MS9740A,self).__init__(link=link)

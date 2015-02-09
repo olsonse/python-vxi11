@@ -302,6 +302,5 @@ class Client(rpc.Client):
     LinkClass = Link
     link = Link(LinkResp=res,client=self)
     if autoid:
-      id = link.query('*IDN?')
-      return tools.registered.get(id, lambda x:x)(link)
+      return tools.get( link.query('*IDN?') )(link)
     return link

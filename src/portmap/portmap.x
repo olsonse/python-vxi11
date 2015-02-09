@@ -1,4 +1,8 @@
 const PMAP_PORT = 111;      /* portmapper port number */
+/* A mapping is (prog, vers, prot, port) and prot is one of: */
+const IP_TCP = 6;
+const IP_UDP = 17;
+
 
 struct pmap2_mapping {
   unsigned int prog;
@@ -72,12 +76,12 @@ struct pmap3_netbuf {
 
 program PMAP_PROGRAM {
   version PMAP_V2 {
-    void PMAP2_NULL(void)                           = 0;
-    bool PMAP2_SET(pmap2_mapping)                   = 1;
-    bool PMAP2_UNSET(pmap2_mapping)                 = 2;
-    unsigned int PMAP2_GETPORT(pmap2_mapping)       = 3;
-    pmap2_dump_result PMAP2_DUMP(void)              = 4;
-    pmap2_call_result PMAP2_CALLIT(pmap2_call_args) = 5;
+    void PMAP2_NULL(void)                                       = 0;
+    bool PMAP2_SET(pmap2_mapping)                               = 1;
+    bool PMAP2_UNSET(pmap2_mapping)                             = 2;
+    unsigned int PMAP2_GETPORT(pmap2_mapping)                   = 3;
+    pmap2_dump_result PMAP2_DUMP(void)                          = 4;
+    pmap2_call_result PMAP2_CALLIT(pmap2_call_args)             = 5;
   } = 2;
 
   version PMAP_V3 {

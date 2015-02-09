@@ -26,7 +26,8 @@ I am including the rpc package from newpynfs here (but not rpcgen.py).
 
 """
 
-DIRS = [join('src','rpc'), join('src/vxi11')] # Order is important
+# Order is important:
+DIRS = [join('src','rpc'), join('src','portmap'), join('src','vxi11')]
 
 def setup(*args, **kwargs):
   print "This just runs the setup.py file in each of the following dirs:"

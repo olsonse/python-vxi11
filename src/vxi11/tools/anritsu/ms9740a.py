@@ -29,10 +29,10 @@ except:
   print 'getCurve will not work since numpy is not found'
 
 class MS9740A(vxi11.Link):
-    """VXI-11 Link for controlling the MS9740A."""
-    IDN = 'ms9740a'
+  """VXI-11 Link for controlling the MS9740A."""
+  model = 'ms9740a'
 
-    def __init__(self, link=None, host=None):
-        if host is not None:
-            link = vxi11.Client(host=host).open_link()
-        super(MS9740A,self).__init__(link=link)
+  def __init__(self, link=None, host=None):
+    if host is not None:
+      link = vxi11.Client(host=host).open_link()
+    super(MS9740A,self).__init__(link=link)

@@ -9,7 +9,7 @@ __all__ = [ m.__name__ for m in models.values() ] + ['get']
 
 
 def get(idn):
-  m = re.match('Tektronix,(?P<model>[^,]*),(?P<sn>[^,]*),(?P<fw>[^,]*)', idn)
+  m = re.match('tektronix,(?P<model>[^,]*),(?P<sn>[^,]*),(?P<fw>[^,]*)', idn)
   if m:
-    return models.get(m.group('model').lower(), None)
+    return models.get(m.group('model'), None)
   return None

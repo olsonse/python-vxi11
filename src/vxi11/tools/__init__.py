@@ -43,6 +43,7 @@ def get(idn):
   Toplevel tool link generator.
   """
 
+  idn = idn.lower()
   for g in generators:
     G = g.get(idn)
     if G: return G

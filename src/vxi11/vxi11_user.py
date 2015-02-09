@@ -29,7 +29,6 @@ from vxi11_const import *
 import vxi11_type
 from vxi11_type import *
 import vxi11_pack
-import tools
 
 import threading
 
@@ -90,7 +89,7 @@ class VXI11Error(object):
 
 
 
-class Link(Create_LinkResp):
+class Link(object,Create_LinkResp):
   def __init__(self, link=None, LinkResp=None, client=None):
     if link is not None:
       LinkResp = link
@@ -100,7 +99,8 @@ class Link(Create_LinkResp):
     elif client is None:
       raise RuntimeError('missing VXI-11 client')
 
-    super(Link,self).__init__(
+    super(Link,self).__init__()
+    Create_LinkResp.__init__(self,
       error       = LinkResp.error,
       lid         = LinkResp.lid,
       abortPort   = LinkResp.abortPort,
@@ -153,8 +153,6 @@ class Link(Create_LinkResp):
 
     # We can only write (link.maxRecvSize) bytes at a time, so we sit in
     # a loop, writing a chunk at a time, until we're done.
-    p = self.vxi11packer
-    un_p = self.vxi11unpacker
     while cmd != '':
       cmd_i = cmd[0:self.maxRecvSize]
       cmd = cmd[self.maxRecvSize:]
@@ -169,7 +167,7 @@ class Link(Create_LinkResp):
       res = self._make_call( device_write, wp,
                              self.p.pack_Device_WriteParms,
                              self.un_p.unpack_Device_WriteResp,
-                             timeout=int(1.5*VXI11_DEFAULT_TIMEOUT) )
+                             timeout=1.5*VXI11_DEFAULT_TIMEOUT )
       assert len(cmd_i) == res.size, 'link.send: Could not write data'
 
   def read(self, rqlen=None, timeout=None):
@@ -198,7 +196,7 @@ class Link(Create_LinkResp):
       res = self._make_call( device_read, rp,
                              self.p.pack_Device_ReadParms,
                              self.un_p.unpack_Device_ReadResp,
-                             timeout=int(1.5*timeout) )
+                             timeout=1.5*timeout )
       str_list.append(res.data)
       pos += len(res.data)
 
@@ -225,7 +223,7 @@ class Link(Create_LinkResp):
       ),
       self.p.pack_Device_GenericParms,
       unpacker,
-      timeout=int(1.5*VXI11_DEFAULT_TIMEOUT),
+      timeout=1.5*VXI11_DEFAULT_TIMEOUT,
     )
 
   def status(self):
@@ -302,5 +300,6 @@ class Client(rpc.Client):
     LinkClass = Link
     link = Link(LinkResp=res,client=self)
     if autoid:
+      import tools # delayed to allow complete loading
       return tools.get( link.query('*IDN?') )(link)
     return link

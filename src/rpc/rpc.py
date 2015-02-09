@@ -255,6 +255,14 @@ class Pipe(object):
         data = self._s.recv(count)
         if not data:
             # This indicates socket has closed
+            # We are going to try and convert the result into complete packet
+            # anyway.  This is because Windows XP does not seem to always set
+            # the last fragment bit (at least for portmapper), but just closes
+            # the socket.
+            if self._packet_buf:
+              record = ''.join(self._packet_buf)
+              self._packet_buf = []
+              return [record]
             return None
         out = []
         self._read_buf += data

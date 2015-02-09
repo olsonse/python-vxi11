@@ -47,14 +47,20 @@ class Client(rpc.Client):
     super(Client,self).__init__( PMAP_PROGRAM, PMAP_V2 )
     self.pipe = self.connect( (host, PMAP_PORT) )
     self.p    = portmap_pack.PORTMAPPacker()
-    self.u    = portmap_pack.PORTMAPUnpacker('')
+    self.un_p = portmap_pack.PORTMAPUnpacker('')
+
+  def __del__(self):
+    self.close()
+  def close(self):
+    """Closes the underlying socket of the RPC connection"""
+    self.pipe._s.close()
 
   def _make_call( self, procedure, data, packer=EP, unpacker=EU, timeout=None ):
     self.p.reset()
     packer( data )
     xid = self.send_call( self.pipe, procedure, self.p.get_buffer() )
     header, data = self.pipe.listen( xid, timeout )
-    self.u.reset( data )
+    self.un_p.reset( data )
     return unpacker()
 
   def null(self, **kw):
@@ -63,21 +69,21 @@ class Client(rpc.Client):
   def set(self, mapping, **kw):
     return self._make_call( PMAP2_SET, mapping,
                             self.p.pack_pmap2_mapping,
-                            self.u.unpack_bool, **kw )
+                            self.un_p.unpack_bool, **kw )
 
   def unset(self, mapping, **kw):
     return self._make_call( PMAP2_UNSET, mapping,
                             self.p.pack_pmap2_mapping,
-                            self.u.unpack_bool, **kw )
+                            self.un_p.unpack_bool, **kw )
 
   def getport(self, mapping, **kw):
     return self._make_call( PMAP2_GETPORT, mapping,
                             self.p.pack_pmap2_mapping,
-                            self.u.unpack_uint, **kw )
+                            self.un_p.unpack_uint, **kw )
 
   def dump(self, **kw):
     L = self._make_call( PMAP2_DUMP, None, EP,
-                         self.u.unpack_pmap2_dump_result, **kw ).list
+                         self.un_p.unpack_pmap2_dump_result, **kw ).list
     R = list()
     while L:
       L = L[0]
@@ -88,7 +94,7 @@ class Client(rpc.Client):
   def callit(self, call_args, **kw):
     return self._make_call( PMAP2_CALLIT, call_args,
                             self.p.pack_pmap2_call_args,
-                            self.u.unpack_pmap2_call_result, **kw )
+                            self.un_p.unpack_pmap2_call_result, **kw )
 
 
 

@@ -25,3 +25,12 @@ from portmap_const import *
 from portmap_type import \
   pmap2_mapping as mapping, \
   pmap2_call_args as call_args
+
+
+def get_address( host, prog, vers, prot, port=None ):
+  if port:
+    return (host,port)
+  pmap = Client(host)
+  port = pmap.getport( mapping( prog, vers, prot, 0 ) )
+  del pmap
+  return (host,port)

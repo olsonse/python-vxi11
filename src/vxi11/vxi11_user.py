@@ -22,13 +22,14 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 """
 
 
-import rpc
+import rpc, portmap
 from xdrlib import Error as XDRError
 import vxi11_const
 from vxi11_const import *
 import vxi11_type
 from vxi11_type import *
 import vxi11_pack
+import tools
 
 import threading
 
@@ -48,221 +49,259 @@ RCV_CHR_BIT             = 0x02  # A termchr is set in flags and a character whic
 RCV_REQCNT_BIT          = 0x01  # requestSize bytes have been transferred.  This includes a request size of zero.
 
 class VXI11Exception(rpc.RPCError):
-    """VXI-11 Error"""
-    def __init__(self, msg=""):
-        self.msg = msg
-    
-    def __str__(self):
-        if self.msg:
-            return "VXI-11 Error: %s" % self.msg
-        else:
-            return "VXI-11 Error "
+  """VXI-11 Error"""
+  def __init__(self, msg=""):
+    self.msg = msg
+
+  def __str__(self):
+    if self.msg:
+      return "VXI-11 Error: %s" % self.msg
+    else:
+      return "VXI-11 Error "
 
 
-class VXI11Error:
-    errs = {
-     # error    Meaning
-         0   : 'No error',
-         1   : 'Syntax error',
-         3   : 'device not accessible',
-         4   : 'invalid link identifier',
-         5   : 'parameter error',
-         6   : 'channel not established',
-         8   : 'operation not supported',
-         9   : 'out of resources',
-         11  : 'device locked by another link',
-         12  : 'no lock held by this link',
-         15  : 'I/O timeout',
-         17  : 'I/O error',
-         21  : 'Invalid address',
-         23  : 'abort',
-         29  : 'channel already established'
-    }
+class VXI11Error(object):
+  errs = {
+   # error    Meaning
+     0   : 'No error',
+     1   : 'Syntax error',
+     3   : 'device not accessible',
+     4   : 'invalid link identifier',
+     5   : 'parameter error',
+     6   : 'channel not established',
+     8   : 'operation not supported',
+     9   : 'out of resources',
+     11  : 'device locked by another link',
+     12  : 'no lock held by this link',
+     15  : 'I/O timeout',
+     17  : 'I/O error',
+     21  : 'Invalid address',
+     23  : 'abort',
+     29  : 'channel already established'
+  }
 
-    def check(error=0):
-        if error > 0:
-            if error in VXI11Error.errs:
-                raise VXI11Exception(VXI11Error.errs[error])
-            else:
-                raise VXI11Exception('Unknown error')
-    check = staticmethod(check)
-
-
-# STUB
-AuthSys = rpc.SecAuthSys(0,'jupiter',103558,100,[])
-
-from exceptions import RuntimeError
-
-class VXI11Link(Create_LinkResp):
-    def __init__(self, link=None, LinkResp=None, client=None):
-        if link is not None:
-            LinkResp = link
-            client = link.client
-        elif LinkResp is None:
-            raise RuntimeError('missing VXI-11 link')
-        elif client is None:
-            raise RuntimeError('missing VXI-11 client')
-
-        Create_LinkResp.__init__(self,
-            error       = LinkResp.error,
-            lid         = LinkResp.lid,
-            abortPort   = LinkResp.abortPort,
-            maxRecvSize = LinkResp.maxRecvSize
-        )
-        self.client = client
-        self.vxi11packer = vxi11_pack.VXI11Packer()
-        self.vxi11unpacker = vxi11_pack.VXI11Unpacker('')
-
-        self.read_timeout = VXI11_READ_TIMEOUT
-
-    def close(self):
-        if self.lid in self.client.links:
-            del self.client.links[self.lid]
-
-        # I'll still try and close the link even if the link wasn't actually
-        # stored in links.
-        p = self.vxi11packer
-        un_p = self.vxi11unpacker
-        p.reset()
-        p.pack_Device_Link(self.lid)
-        res = self.client.call( destroy_link, p.get_buffer() )
-        un_p.reset(res);
-        res = un_p.unpack_Device_Error()
-        VXI11Error.check(res.error)
-
-    def send(self, cmd):
-        """
-           Send command(s) through the VXI-11 link to the remote device.
-           cmd can either be a single string command, a list of commands, or a
-           tuple of commands.
-        """
-        if cmd.__class__ is tuple or cmd.__class__ is list:
-            # recursive call for a list of commands
-            for cmd_i in cmd:
-                self.send(cmd_i)
-            return
-
-        wp = Device_WriteParms(
-            lid          = self.lid,
-            io_timeout   = VXI11_DEFAULT_TIMEOUT,
-            lock_timeout = VXI11_DEFAULT_TIMEOUT,
-        )
-
-        # We can only write (link.maxRecvSize) bytes at a time, so we sit in
-        # a loop, writing a chunk at a time, until we're done. 
-        p = self.vxi11packer
-        un_p = self.vxi11unpacker
-        while cmd != '':
-            cmd_i = cmd[0:self.maxRecvSize]
-            cmd = cmd[self.maxRecvSize:]
-
-            if cmd == '': # finished
-                wp.flags = 8
-            else:
-                wp.flags = 0
-
-            wp.data = cmd_i
-
-            p.reset()
-            p.pack_Device_WriteParms(wp)
-            res = self.client.call( device_write, p.get_buffer() )
-            un_p.reset(res);
-            res = un_p.unpack_Device_WriteResp()
-            VXI11Error.check(res.error)
-
-    def read(self, rqlen=None, timeout=None):
-        if rqlen is None:
-            # default to 1 GB? who knows?
-            rqlen = 1<<30
-        if timeout is None:
-            timeout = self.read_timeout
-
-        rp = Device_ReadParms(
-            lid          = self.lid,
-            requestSize  = rqlen,
-            io_timeout   = timeout,
-            lock_timeout = timeout,
-            flags        = 0,
-            termChar     = 0
-        )
-
-        # We can only write (link.maxRecvSize) bytes at a time, so we sit in
-        # a loop, writing a chunk at a time, until we're done. 
-        p = self.vxi11packer
-        un_p = self.vxi11unpacker
-        pos = 0
-        str_list = []
-        while pos < rqlen:
-            rp.requestSize = rqlen - pos
-            p.reset()
-            p.pack_Device_ReadParms(rp)
-            res = self.client.call( device_read, p.get_buffer() )
-            un_p.reset(res);
-            res = un_p.unpack_Device_ReadResp()
-            VXI11Error.check(res.error)
-            str_list.append(res.data)
-            pos += len(res.data)
-
-            if res.reason & RCV_END_BIT or res.reason & RCV_CHR_BIT:
-                break
-
-        return ''.join(str_list)
-
-    def query(self, query_cmd, rqlen=None, timeout=None):
-        """QUERY the device."""
-        # note that we rely on SEND and READ to throw their own exceptions.
-        self.send(query_cmd)
-        return self.read(rqlen,timeout)
+  @staticmethod
+  def check(error=0):
+    if error > 0:
+      if error in VXI11Error.errs:
+        raise VXI11Exception(VXI11Error.errs[error])
+      else:
+        raise VXI11Exception('Unknown error')
 
 
 
-class VXI11Client(rpc.RPCClient):
-    def __init__(self, host='localhost', port=739, sec_list=[AuthSys]):
-        self.vxi11packer = vxi11_pack.VXI11Packer()
-        self.vxi11unpacker = vxi11_pack.VXI11Unpacker('')
-        self.links = dict()
-        rpc.RPCClient.__init__(self, host, port,
-                               program=DEVICE_CORE,
-                               version=DEVICE_CORE_VERSION,
-                               sec_list=sec_list)
+class Link(Create_LinkResp):
+  def __init__(self, link=None, LinkResp=None, client=None):
+    if link is not None:
+      LinkResp = link
+      client = link.client
+    elif LinkResp is None:
+      raise RuntimeError('missing VXI-11 link')
+    elif client is None:
+      raise RuntimeError('missing VXI-11 client')
 
-    def close(self):
-        """Closes the underlying socket of the RPC connection"""
-        t = threading.currentThread()
-        if t in self._socket:
-            self._socket[t].close()
-            del self._socket[t]
+    super(Link,self).__init__(
+      error       = LinkResp.error,
+      lid         = LinkResp.lid,
+      abortPort   = LinkResp.abortPort,
+      maxRecvSize = LinkResp.maxRecvSize
+    )
+    self.client = client
+    self.p = vxi11_pack.VXI11Packer()
+    self.un_p = vxi11_pack.VXI11Unpacker('')
 
-    next_id = 10001
-    def get_unique_id():
-        id = VXI11Client.next_id
-        VXI11Client.next_id += 1
-        return id
-    get_unique_id = staticmethod(get_unique_id)
+    self.read_timeout = VXI11_READ_TIMEOUT
 
-    def open_link(self, device = "inst0"):
-        id = VXI11Client.get_unique_id()
-        p = self.vxi11packer
-        un_p = self.vxi11unpacker
-        p.reset()
-        p.pack_Create_LinkParms(
-            Create_LinkParms(
-                clientId = id,
-                lockDevice = 0,
-                lock_timeout = VXI11_DEFAULT_TIMEOUT,
-                device=device
-            )
-        )
-        res = self.call( create_link, p.get_buffer() )
-        un_p.reset(res);
-        link = un_p.unpack_Create_LinkResp()
+  def _make_call( self, procedure, data, packer, unpacker, timeout=None ):
+    self.p.reset()
+    packer( data )
+    xid = self.client.send_call( self.client.pipe, procedure, self.p.get_buffer() )
+    header, data = self.client.pipe.listen( xid, timeout )
+    self.un_p.reset( data )
+    res = unpacker()
+    VXI11Error.check(res.error)
+    return res
 
-        # check for errors, this raises exceptions on errors
-        VXI11Error.check(link.error)
 
-        self.links[link.lid] = (device,link)
-        link = VXI11Link(LinkResp=link,client=self)
-        return link
+  def close(self, **kw):
+    if self.lid in self.client.links:
+      del self.client.links[self.lid]
 
-#############################################################
+    # I'll still try and close the link even if the link wasn't actually
+    # stored in links.
+    res = self._make_call( destroy_link, self.lid,
+                           self.p.pack_Device_Link,
+                           self.un_p.unpack_Device_Error, **kw )
 
+  def send(self, cmd):
+    """
+    Send command(s) through the VXI-11 link to the remote device.
+    cmd can either be a single string command, a list of commands, or a
+    tuple of commands.
+    """
+    if cmd.__class__ in [tuple,list]:
+      # recursive call for a list of commands
+      for cmd_i in cmd:
+        self.send(cmd_i)
+      return
+
+    wp = Device_WriteParms(
+      lid          = self.lid,
+      io_timeout   = VXI11_DEFAULT_TIMEOUT,
+      lock_timeout = VXI11_DEFAULT_TIMEOUT,
+    )
+
+    # We can only write (link.maxRecvSize) bytes at a time, so we sit in
+    # a loop, writing a chunk at a time, until we're done.
+    p = self.vxi11packer
+    un_p = self.vxi11unpacker
+    while cmd != '':
+      cmd_i = cmd[0:self.maxRecvSize]
+      cmd = cmd[self.maxRecvSize:]
+
+      if cmd == '': # finished
+        wp.flags = 8
+      else:
+        wp.flags = 0
+
+      wp.data = cmd_i
+
+      res = self._make_call( device_write, wp,
+                             self.p.pack_Device_WriteParms,
+                             self.un_p.unpack_Device_WriteResp,
+                             timeout=int(1.5*VXI11_DEFAULT_TIMEOUT) )
+      assert len(cmd_i) == res.size, 'link.send: Could not write data'
+
+  def read(self, rqlen=None, timeout=None):
+    if rqlen is None:
+      # default to 1 GB? who knows?
+      rqlen = 1<<30
+    if timeout is None:
+      timeout = self.read_timeout
+
+    rp = Device_ReadParms(
+      lid          = self.lid,
+      requestSize  = rqlen,
+      io_timeout   = timeout,
+      lock_timeout = timeout,
+      flags        = 0,
+      termChar     = 0
+    )
+
+    # We can only read (unknown) bytes at a time, so we sit in
+    # a loop, reading a chunk at a time, until we're done.
+    pos = 0
+    str_list = list()
+    while pos < rqlen:
+      rp.requestSize = rqlen - pos
+
+      res = self._make_call( device_read, rp,
+                             self.p.pack_Device_ReadParms,
+                             self.un_p.unpack_Device_ReadResp,
+                             timeout=int(1.5*timeout) )
+      str_list.append(res.data)
+      pos += len(res.data)
+
+      if res.reason & RCV_END_BIT or res.reason & RCV_CHR_BIT:
+        break
+
+    return ''.join(str_list)
+
+  def query(self, query_cmd, rqlen=None, timeout=None):
+    """QUERY the device."""
+    # note that we rely on SEND and READ to throw their own exceptions.
+    self.send(query_cmd)
+    return self.read(rqlen,timeout)
+
+  def _simple_generic_proc(self, proc, unpacker=None):
+    if unpacker is None:
+      unpacker = self.un_p.unpack_Device_Error
+    return self._make_call( proc,
+      Device_GenericParms(
+        lid          = self.lid,
+        flags        = 0,
+        io_timeout   = VXI11_DEFAULT_TIMEOUT,
+        lock_timeout = VXI11_DEFAULT_TIMEOUT,
+      ),
+      self.p.pack_Device_GenericParms,
+      unpacker,
+      timeout=int(1.5*VXI11_DEFAULT_TIMEOUT),
+    )
+
+  def status(self):
+    return self._simple_generic_proc(
+      device_trigger,self.un_p.unpack_Device_ReadStbResp
+    ).stb
+  def trigger(self):
+    self._simple_generic_proc( device_trigger )
+  def clear(self):
+    self._simple_generic_proc( device_clear )
+  def remote(self):
+    self._simple_generic_proc( device_remote )
+  def local(self):
+    self._simple_generic_proc( device_local )
+
+
+
+EP = lambda x :  ''
+EU = lambda x : None
+
+
+class Client(rpc.Client):
+  def __init__(self, host='localhost', port=None):
+    super(Client,self).__init__( DEVICE_CORE, DEVICE_CORE_VERSION )
+    address = portmap.get_address(
+      host, DEVICE_CORE, DEVICE_CORE_VERSION, portmap.IP_TCP, port
+    )
+
+    self.pipe = self.connect( address )
+    self.p    = vxi11_pack.VXI11Packer()
+    self.un_p = vxi11_pack.VXI11Unpacker('')
+    self.links = dict()
+
+  def __del__(self):
+    self.close()
+  def close(self):
+    """Closes the underlying socket of the RPC connection"""
+    self.pipe._s.close()
+
+  def _make_call( self, procedure, data, packer=EP, unpacker=EU, timeout=None ):
+    self.p.reset()
+    packer( data )
+    xid = self.send_call( self.pipe, procedure, self.p.get_buffer() )
+    header, data = self.pipe.listen( xid, timeout )
+    self.un_p.reset( data )
+    return unpacker()
+
+
+  next_id = 10001
+  @staticmethod
+  def get_unique_id():
+    id = Client.next_id
+    Client.next_id += 1
+    return id
+
+  def open_link(self, device = "inst0", autoid=True):
+    res = self._make_call(
+      create_link,
+      Create_LinkParms(
+        clientId = self.get_unique_id(),
+        lockDevice = 0,
+        lock_timeout = VXI11_DEFAULT_TIMEOUT,
+        device=device,
+      ),
+      self.p.pack_Create_LinkParms,
+      self.un_p.unpack_Create_LinkResp,
+      timeout=VXI11_DEFAULT_TIMEOUT,
+    )
+
+    # check for errors, this raises exceptions on errors
+    VXI11Error.check(res.error)
+
+    self.links[res.lid] = (device,res)
+    LinkClass = Link
+    link = Link(LinkResp=res,client=self)
+    if autoid:
+      id = link.query('*IDN?')
+      return tools.registered.get(id, lambda x:x)(link)
+    return link

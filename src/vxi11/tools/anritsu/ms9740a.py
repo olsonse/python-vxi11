@@ -28,6 +28,9 @@ try:
 except:
   print 'getCurve will not work since numpy is not found'
 
+def assert_channel(channel):
+  assert channel in ['A','B','C','D','E','F','G','H','I','J'], 'invalid channel'
+
 class MS9740A(vxi11.Link):
   """VXI-11 Link for controlling the MS9740A."""
   model = 'ms9740a'
@@ -36,3 +39,20 @@ class MS9740A(vxi11.Link):
     if host is not None:
       link = vxi11.Client(host=host).open_link()
     super(MS9740A,self).__init__(link=link)
+
+  def getdata(self,channel):
+    assert_channel(channel)
+    DM = 'DM{}?'.format(channel)
+    return self.query(DM).split()
+
+  def getspan(self, channel):
+    assert_channel(channel)
+    DC = 'DC{}?'.format(channel)
+    xi,xf,N = [ float(i) for i in self.query(DC).strip().split(',') ]
+    N = int(N)
+    return xi,xf,N
+
+  def getCurve(self,channel):
+    y       = self.getdata(channel)
+    xi,xf,N = self.getspan(channel)
+    return r_[xi:xf:(1j*N)], y

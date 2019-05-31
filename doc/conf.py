@@ -18,7 +18,7 @@ import os
 DOCROOT = os.path.dirname(__file__)
 
 sys.path.insert(0,
-  os.path.abspath(os.path.join(DOCROOT, os.path.pardir, 'src'))
+  os.path.abspath(os.path.join(DOCROOT, os.path.pardir))
 )
 
 # If extensions (or modules to document with autodoc) are in another directory,

@@ -26,11 +26,11 @@ if __name__ == '__main__':
 
 import rpc
 from xdrlib import Error as XDRError
-import portmap_const
-from portmap_const import *
-import portmap_type
-from portmap_type import *
-import portmap_pack
+from . import portmap_const
+from .portmap_const import *
+from . import portmap_type
+from .portmap_type import *
+from .import portmap_pack
 
 # A pmaplist is a variable-length list of mappings, as follows:
 # either (1, mapping, pmaplist) or (0).
@@ -102,15 +102,19 @@ def test():
   """
   Simple test program -- dump local portmapper status
   """
+  import six
   pmap = Client('localhost')
   L = pmap.dump()
   L.sort()
   for m in L:
-    print m.prog, m.vers,
-    if m.prot == IP_TCP: print 'tcp',
-    elif m.prot == IP_UDP: print 'udp',
-    else: print m.prot,
-    print m.port
+    six.print_(m.prog, m.vers, end=' ')
+    if m.prot == IP_TCP:
+      six.print_('tcp', end=' ')
+    elif m.prot == IP_UDP:
+      six.print_('udp', end=' ')
+    else:
+      six.print_(m.prot, end=' ')
+    six.print_(m.port)
 
 if __name__ == '__main__':
   test()

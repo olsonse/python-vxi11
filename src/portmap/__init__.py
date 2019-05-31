@@ -19,10 +19,10 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 """
 
-from client import Client
-from portmap_const import *
+from .client import Client
+from .portmap_const import *
 
-from portmap_type import \
+from .portmap_type import \
   pmap2_mapping as mapping, \
   pmap2_call_args as call_args
 

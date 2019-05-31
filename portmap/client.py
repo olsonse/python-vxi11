@@ -38,7 +38,7 @@ from .import portmap_pack
 # A call_args is (prog, vers, proc, args) where args is opaque;
 # a call_result is (port, res) where res is opaque.
 
-EP = lambda x :  ''
+EP = lambda x :  b''
 EU = lambda x : None
 
 
@@ -47,7 +47,7 @@ class Client(rpc.Client):
     super(Client,self).__init__( PMAP_PROGRAM, PMAP_V2 )
     self.pipe = self.connect( (host, PMAP_PORT) )
     self.p    = portmap_pack.PORTMAPPacker()
-    self.un_p = portmap_pack.PORTMAPUnpacker('')
+    self.un_p = portmap_pack.PORTMAPUnpacker(b'')
 
   def __del__(self):
     self.close()

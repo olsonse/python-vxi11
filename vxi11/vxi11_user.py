@@ -30,7 +30,7 @@ from . import vxi11_type
 from .vxi11_type import *
 from . import vxi11_pack
 
-import threading
+import threading, six
 
 
 VXI11_DEFAULT_TIMEOUT   = 10000 # ms
@@ -107,7 +107,7 @@ class Link(Create_LinkResp):
     )
     self.client = client
     self.p = vxi11_pack.VXI11Packer()
-    self.un_p = vxi11_pack.VXI11Unpacker('')
+    self.un_p = vxi11_pack.VXI11Unpacker(b'')
 
     self.read_timeout = VXI11_READ_TIMEOUT
 
@@ -144,6 +144,10 @@ class Link(Create_LinkResp):
         self.send(cmd_i)
       return
 
+    # ensure the user's data is encoded as bytes
+    if isinstance(cmd, six.string_types):
+      cmd = cmd.encode()
+
     wp = Device_WriteParms(
       lid          = self.lid,
       io_timeout   = VXI11_DEFAULT_TIMEOUT,
@@ -152,11 +156,11 @@ class Link(Create_LinkResp):
 
     # We can only write (link.maxRecvSize) bytes at a time, so we sit in
     # a loop, writing a chunk at a time, until we're done.
-    while cmd != '':
+    while cmd != b'':
       cmd_i = cmd[0:self.maxRecvSize]
       cmd = cmd[self.maxRecvSize:]
 
-      if cmd == '': # finished
+      if cmd == b'': # finished
         wp.flags = 8
       else:
         wp.flags = 0
@@ -202,7 +206,7 @@ class Link(Create_LinkResp):
       if res.reason & RCV_END_BIT or res.reason & RCV_CHR_BIT:
         break
 
-    return ''.join(str_list)
+    return b''.join(str_list)
 
   def query(self, query_cmd, rqlen=None, timeout=None):
     """QUERY the device."""
@@ -240,7 +244,7 @@ class Link(Create_LinkResp):
 
 
 
-EP = lambda x :  ''
+EP = lambda x :  b''
 EU = lambda x : None
 
 
@@ -253,7 +257,7 @@ class Client(rpc.Client):
 
     self.pipe = self.connect( address )
     self.p    = vxi11_pack.VXI11Packer()
-    self.un_p = vxi11_pack.VXI11Unpacker('')
+    self.un_p = vxi11_pack.VXI11Unpacker(b'')
     self.links = dict()
 
   def __del__(self):
@@ -278,7 +282,7 @@ class Client(rpc.Client):
     Client.next_id += 1
     return id
 
-  def open_link(self, device = "inst0", autoid=True):
+  def open_link(self, device = b"inst0", autoid=True):
     res = self._make_call(
       create_link,
       Create_LinkParms(
@@ -300,5 +304,5 @@ class Client(rpc.Client):
     link = Link(LinkResp=res,client=self)
     if autoid:
       from . import tools # delayed to allow complete loading
-      return tools.get( link.query('*IDN?') )(link)
+      return tools.get( link.query('*IDN?'.encode()).decode() )(link)
     return link

@@ -4,7 +4,7 @@ from .rpc_type import *
 import logging
 log = logging.getLogger("rpc.lib")
 
-NULL_CRED = opaque_auth(AUTH_NONE, '')
+NULL_CRED = opaque_auth(AUTH_NONE, b'')
 
 class RPCFlowContol(Exception):
     """Used to initiate unusual flow control changes.

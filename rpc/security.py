@@ -86,13 +86,13 @@ class AuthNone(object):
     @staticmethod
     def pack_cred(py_data):
         """Take opaque_auth.body type and pack it as opaque"""
-        # For auth_none, py_data==''
+        # For auth_none, py_data==b''
         return py_data
 
     @staticmethod
     def unpack_cred(data):
         """Take opaque_auth.body and de-opaque it"""
-        # For auth_none, data==''
+        # For auth_none, data==b''
         return data
 
     def init_cred(self):
@@ -115,7 +115,7 @@ class AuthNone(object):
             raise SecError("Bad reply verifier - expected NULL verifier")
 
     def is_NULL(self, cred):
-        return cred.flavor == AUTH_NONE and cred.body == ''
+        return cred.flavor == AUTH_NONE and cred.body == b''
 
 class AuthSys(AuthNone):
     """Standard UNIX based security, defined in Appendix A of RFC 1831"""
@@ -244,7 +244,7 @@ class AuthGss(AuthNone):
         # STUB - need intelligent way to set defaults
         good_major = [gssapi.GSS_S_COMPLETE, gssapi.GSS_S_CONTINUE_NEEDED]
         p = Packer()
-        up = GSSUnpacker('')
+        up = GSSUnpacker(b'')
         # Set target (of form nfs@SERVER)
         target = gssapi.Name(target, gssapi.NT_HOSTBASED_SERVICE)
         # Set source (of form USERNAME)
@@ -256,7 +256,7 @@ class AuthGss(AuthNone):
             gss_cred = None
         context = gssapi.Context()
         token = None
-        handle = ''
+        handle = b''
         proc = RPCSEC_GSS_INIT
         while True:
             # Call initSecContext.  If it returns COMPLETE, we are done.
@@ -269,7 +269,7 @@ class AuthGss(AuthNone):
                 # XXX if res.major == CONTINUE there is a bug in library code
                 # STUB - now what? Just use context?
                 # XXX need to use res.seq_window
-                # XXX - what if handle still '' ?
+                # XXX - what if handle still b'' ?
                 self._add_context(context, handle)
                 break
             # Send token to target using protocol of RFC 2203 sect 5.2.2
@@ -525,7 +525,7 @@ class AuthGss(AuthNone):
         except gssapi.Error as e:
             log_gss.debug("RPCSEC_GSS_INIT failed (%s, %i)!" %
                           (e.name, e.minor))
-            res = rpc_gss_init_res('', e.major, e.minor, 0, '')
+            res = rpc_gss_init_res(b'', e.major, e.minor, 0, b'')
         else:
             log_gss.debug("RPCSEC_GSS_*INIT succeeded!")
             if first:

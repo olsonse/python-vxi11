@@ -1,5 +1,5 @@
 import re
-from tds5000b import TDS5000B
+from .tds5000b import TDS5000B
 
 models = {
   TDS5000B.model : TDS5000B,

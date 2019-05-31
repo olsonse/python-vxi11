@@ -26,7 +26,7 @@ try:
     from numpy import double
     from numpy.lib.index_tricks  import r_
 except:
-    print 'getCurve will not work since numpy is not found'
+    print('getCurve will not work since numpy is not found')
 
 class TDS5000B(vxi11.Link):
     """VXI-11 Link for controlling the TDS5000B."""

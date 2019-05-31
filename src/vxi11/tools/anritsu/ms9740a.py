@@ -26,7 +26,7 @@ try:
   from numpy import double
   from numpy import r_
 except:
-  print 'getCurve will not work since numpy is not found'
+  print('getCurve will not work since numpy is not found')
 
 def assert_channel(channel):
   assert channel in ['A','B','C','D','E','F','G','H','I','J'], 'invalid channel'

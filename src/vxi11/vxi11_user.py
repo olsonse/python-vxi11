@@ -24,11 +24,11 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 import rpc, portmap
 from xdrlib import Error as XDRError
-import vxi11_const
-from vxi11_const import *
-import vxi11_type
-from vxi11_type import *
-import vxi11_pack
+from . import vxi11_const
+from .vxi11_const import *
+from . import vxi11_type
+from .vxi11_type import *
+from . import vxi11_pack
 
 import threading
 
@@ -89,7 +89,7 @@ class VXI11Error(object):
 
 
 
-class Link(object,Create_LinkResp):
+class Link(Create_LinkResp):
   def __init__(self, link=None, LinkResp=None, client=None):
     if link is not None:
       LinkResp = link
@@ -99,8 +99,7 @@ class Link(object,Create_LinkResp):
     elif client is None:
       raise RuntimeError('missing VXI-11 client')
 
-    super(Link,self).__init__()
-    Create_LinkResp.__init__(self,
+    super(Link,self).__init__(
       error       = LinkResp.error,
       lid         = LinkResp.lid,
       abortPort   = LinkResp.abortPort,
@@ -300,6 +299,6 @@ class Client(rpc.Client):
     LinkClass = Link
     link = Link(LinkResp=res,client=self)
     if autoid:
-      import tools # delayed to allow complete loading
+      from . import tools # delayed to allow complete loading
       return tools.get( link.query('*IDN?') )(link)
     return link

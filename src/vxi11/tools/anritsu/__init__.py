@@ -1,5 +1,5 @@
 import re
-from ms9740a import MS9740A
+from .ms9740a import MS9740A
 
 models = {
   MS9740A.model : MS9740A,

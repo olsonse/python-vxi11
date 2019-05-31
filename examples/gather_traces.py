@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 """
 A sample program that stores traces from the scope to file in a loop.
 
@@ -22,7 +22,8 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 # make sure that you include the path to the rpc and vxi11 packages.
 import sys, os
-sys.path.append( os.path.join(os.path.pardir, 'src') )
+sys.path.append(os.path.pardir)
+from six.moves import input
 
 from vxi11.tools import TDS5000B
 
@@ -30,7 +31,7 @@ def haltif(cond, msg=None):
     if cond:
         if msg is None:
             msg = 'Press enter to continue'
-        raw_input(msg)
+        input(msg)
     return cond
 
 def main():
@@ -70,12 +71,11 @@ def main():
     for chi in channels:
         msg.append('%s  ' %chi)
     msg.append('\nto files in \'%s\'' %FDIR)
-    print ''.join(msg)
-    raw_input('Press enter to continue!')
+    print(''.join(msg))
+    input('Press enter to continue!')
 
-    print 'Ready to accumulate ' + str(NUM_AVERAGES) + \
-          ' averages of ' + str(NUM_DATA_POINTS) + \
-          ' data scans'
+    print('Ready to accumulate', str(NUM_AVERAGES),
+          'averages of', str(NUM_DATA_POINTS), 'data scans')
 
 
     if scope.printErrors('Setup Error -- CHECK AFS TOKENS'):
@@ -109,7 +109,7 @@ def main():
                 iter -= 1
                 continue
 
-            print 'Average/Iteration # %(n)d/%(i)d' %{'n':n, 'i':iter}
+            print('Average/Iteration # %(n)d/%(i)d' %{'n':n, 'i':iter})
 
 
 

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 """
 A very simple demonstration of the VXI-11 library and a link to the TDS5000B
 scope.
@@ -23,7 +23,8 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 # make sure that you include the path to the rpc and vxi11 packages.
 import sys, os
-sys.path.append( os.path.join(os.path.pardir, 'src') )
+sys.path.append(os.path.pardir)
+from six.moves import input
 
 from vxi11.tools import TDS5000B
 from vxi11 import VXI11Client
@@ -33,7 +34,7 @@ try:
     from pylab import *
     _mpl_ = True
 except:
-    print 'sad to not have matplotlib'
+    print('sad to not have matplotlib')
 
 def main():
     # all these links to the same scope can be used to do basic vxi-11
@@ -52,7 +53,7 @@ def main():
             plot (x,y)
             show()
     except:
-        print 'I guess we do not have numpy available.'
+        print('I guess we do not have numpy available.')
 
 
     # vxi-11 link to some device (this same scope in this case)
@@ -68,9 +69,9 @@ def main():
     try:
         x,y = scope.getCurve()
     except:
-        print 'I guess we do not have numpy available.'
+        print('I guess we do not have numpy available.')
 
-    raw_input('Press enter to quit')
+    input('Press enter to quit')
 
 
 if __name__ == "__main__":

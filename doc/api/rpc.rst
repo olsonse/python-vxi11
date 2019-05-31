@@ -84,14 +84,6 @@ rpc.security module
     :undoc-members:
     :show-inheritance:
 
-rpc.use_local module
---------------------
-
-.. automodule:: rpc.use_local
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
 rpc.xdrgen module
 -----------------
 

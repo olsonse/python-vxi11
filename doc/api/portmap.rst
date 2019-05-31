@@ -36,22 +36,6 @@ portmap.portmap_type module
     :undoc-members:
     :show-inheritance:
 
-portmap.setup module
---------------------
-
-.. automodule:: portmap.setup
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-portmap.use_local module
-------------------------
-
-.. automodule:: portmap.use_local
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
 
 Module contents
 ---------------

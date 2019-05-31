@@ -62,7 +62,7 @@ class build_py(_build_py):
     for package in self.packages:
       package_dir = self.get_package_dir(package)
       self.expand_xdr(package_dir)
-    super(build_py, self).build_packages()
+    _build_py.build_packages(self)
 
   def expand_xdr(self, dir):
     print('expanding xdr in ', dir)
@@ -77,7 +77,8 @@ try:
   setup(
     name = 'vxi11',
     version = VERSION_NUMBER.partition('-g')[0],
-    packages = ['rpc', 'portmap', 'vxi11'],
+    packages = find_packages(),
+    include_package_data=True,
     cmdclass = {'build_py': build_py},
     description = 'VXI-11 for python',
     long_description = DESCRIPTION,

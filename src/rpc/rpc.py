@@ -1,4 +1,5 @@
 from __future__ import with_statement
+from __future__ import absolute_import
 
 import socket, select
 import struct
@@ -7,12 +8,14 @@ import logging
 from collections import deque as Deque
 from errno import EINPROGRESS, EWOULDBLOCK
 
-import rpc_pack
-from rpc_const import *
-from rpc_type import *
+from . import rpc_pack
+from .rpc_const import *
+from .rpc_type import *
 
-import security
-import rpclib
+from . import security
+from . import rpclib
+import random
+import six
 
 log_p = logging.getLogger("rpc.poll") # polling loop thread
 log_t = logging.getLogger("rpc.thread") # handler threads
@@ -168,7 +171,7 @@ class Alarm(object):
         self._s.setblocking(0)
         try:
             self._s.connect(address)
-        except socket.error, e:
+        except socket.error as e:
             if e.args[0] in [EINPROGRESS, EWOULDBLOCK]:
                 # address has not yet called accept, since this is done in a
                 # single thread, so get "op in progress error".  When the
@@ -272,8 +275,8 @@ class Pipe(object):
                 # We don't even have the packet length yet, wait for more data
                 break
             packetlen = struct.unpack('>L', buf[0:4])[0]
-            last = 0x80000000L & packetlen
-            packetlen &= 0x7fffffffL
+            last = 0x80000000 & packetlen
+            packetlen &= 0x7fffffff
             packetlen += 4 # Include size of record mark
             if len(buf) < packetlen:
                 # We don't have a full packet yet, wait for more data
@@ -317,7 +320,7 @@ class Pipe(object):
                 chunk = record[i: i + count]
                 i += count
                 if i >= dlen:
-                    last = 0x80000000L
+                    last = 0x80000000
                 mark = struct.pack('>L', last | len(chunk))
                 out += mark + chunk
             return out
@@ -337,7 +340,7 @@ class Pipe(object):
             raise RuntimeError
         try:
             count = self._s.send(self._write_buf)
-        except socket.error, e:
+        except socket.error as e:
             log_p.error("flush_pipe got exception %s" % str(e))
             return True # This is to stop retries
         self._write_buf = self._write_buf[count:]
@@ -358,13 +361,23 @@ class RpcPipe(Pipe):
         Pipe.__init__(self, *args, **kwargs)
         self._pending = {} # {xid:defer}
         self._lock = threading.Lock() # Protects fields below
-        self._xid = 0
+        self._xid = random.randint(0, 0x7fffffff)
+        self.set_active()
 
     def _get_xid(self):
         with self._lock:
             out = self._xid
             self._xid = inc_u32(out)
         return out
+
+    def set_active(self):
+        self._active = True
+
+    def clear_active(self):
+        self._active = False
+
+    def is_active(self):
+        return self._active
 
     def listen(self, xid, timeout=None):
         """Wait for a reply to a CALL."""
@@ -508,15 +521,24 @@ class ConnectionHandler(object):
                 log_p.warn(1, "polling error from %i" % fd)
                 # STUB - now what?
             for fd in w:
-                self._event_write(fd)
+                try:
+                    self._event_write(fd)
+                except socket.error as e:
+                    self._event_close(fd)
             for fd in r:
                 if fd in self.listeners:
-                    self._event_connect_incoming(fd)
+                    try:
+                        self._event_connect_incoming(fd)
+                    except socket.error as e:
+                        self._event_close(fd)
                 elif fd == self._alarm_poll.fileno():
                     commands = self._alarm_poll.recv(self.rsize)
                     for c in commands:
                         data = self._alarm.pop()
-                        switch[c](data)
+                        try:
+                            switch[c](data)
+                        except socket.error as e:
+                            self._event_close(fd)
                 else:
                     try:
                         data = self.sockets[fd].recv_records(self.rsize)
@@ -545,7 +567,7 @@ class ConnectionHandler(object):
                 s.setblocking(0)
             else:
                 csock, caddr = s.accept()
-        except socket.error, e:
+        except socket.error as e:
             log_p.error("accept() got error %s" % str(e))
             return
         csock.setblocking(0)
@@ -565,6 +587,7 @@ class ConnectionHandler(object):
         self.writelist -= temp
         self.readlist -= temp
         self.errlist -= temp
+        self.sockets[fd].clear_active()
         self.sockets[fd].close()
         del self.sockets[fd]
 
@@ -600,7 +623,7 @@ class ConnectionHandler(object):
             msg_data = record[p.get_position():] # RPC payload
             # Remember length of the header
             msg.length = p.get_position()
-        except (rpc_pack.XDRError, EOFError), e:
+        except (rpc_pack.XDRError, EOFError) as e:
             log_t.warn("XDRError: %s, dropping packet" % e)
             log_t.debug("unpacking raised the following error", exc_info=True)
             self._notify_drop()
@@ -643,6 +666,7 @@ class ConnectionHandler(object):
         call_info.header_size = msg.length
         call_info.payload_size = len(msg_data)
         call_info.connection = pipe
+        call_info.raw_cred = msg.body.cred
         notify = None
         try:
             # Check for reasons to DENY the call
@@ -678,7 +702,7 @@ class ConnectionHandler(object):
                 status, result, notify = tuple
             if result is None:
                 result = ''
-            if not isinstance(result, basestring):
+            if not isinstance(result, six.string_types):
                 raise TypeError("Expected string")
             # status, result = method(msg_data, call_info)
             log_t.debug("Called method, got %r, %r" % (status, result))
@@ -686,7 +710,7 @@ class ConnectionHandler(object):
             # Silently drop the request
             self._notify_drop()
             return
-        except rpclib.RPCFlowContol, e:
+        except rpclib.RPCFlowContol as e:
             body, data = e.body()
         except Exception:
             log_t.warn("Unexpected exception", exc_info=True)
@@ -810,7 +834,7 @@ class ConnectionHandler(object):
         defer.wait()
         return pipe
 
-    def bindsocket(self, s, port=0):
+    def bindsocket(self, s, port=1):
         """Scan up through ports, looking for one we can bind to"""
         # This is necessary when we need to use a 'secure' port
         using = port
@@ -818,7 +842,7 @@ class ConnectionHandler(object):
             try:
                 s.bind(('', using))
                 return
-            except socket.error, why:
+            except socket.error as why:
                 if why[0] == errno.EADDRINUSE:
                     using += 1
                     if port < 1024 <= using:
@@ -864,8 +888,8 @@ class ConnectionHandler(object):
     def listen(self, pipe, xid):
         # STUB - should be overwritten by subclass
         header, data = pipe.listen(xid)
-        print "HEADER", header
-        print "DATA", repr(data)
+        print("HEADER", header)
+        print("DATA", repr(data))
 
 #################################################
 

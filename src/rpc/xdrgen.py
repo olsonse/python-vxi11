@@ -215,7 +215,10 @@
 
 import sys
 import keyword
-import StringIO
+try:
+    import cStringIO.StringIO as StringIO
+except:
+    from io import StringIO
 import time
 import os
 # Allow to be run stright from package
@@ -300,9 +303,9 @@ def t_linecomment(t):
     t.lexer.lineno += 1
 
 def t_error(t):
-    print "Illegal character %s at %d type %s" % (repr(t.value[0]), t.lexer.lineno, t.type)
+    print("Illegal character %s at %d type %s" % (repr(t.value[0]), t.lexer.lineno, t.type))
     t.lexer.skip(1)
-    
+
 # Build the lexer
 lex.lex(debug=0)
 
@@ -338,10 +341,7 @@ def p_constant(t):
     '''constant : CONST10
                 | CONST8
                 | CONST16'''
-    if len(t[1]) > 9:
-        t[0] = t[1] + 'L'
-    else:
-        t[0] = t[1]
+    t[0] = t[1]
 
 def p_value(t):
     '''value : constant
@@ -371,7 +371,7 @@ def p_optional_value(t):
     if msg:
         global error_occurred
         error_occurred = True
-        print "ERROR - %s near line %i" % (msg, t.lineno(1))
+        print("ERROR - %s near line %i" % (msg, t.lineno(1)))
 
 def p_type_def_1(t):
     '''type_def : TYPEDEF declaration SEMI'''
@@ -382,7 +382,7 @@ def p_type_def_1(t):
     if d.type == 'void':
         global error_occurred
         error_occurred = True
-        print "ERROR - can't use void in typedef at line %i" % lineno
+        print("ERROR - can't use void in typedef at line %i" % lineno)
         return
     d.lineno = lineno
     if id_unique(d.id, d.type, lineno):
@@ -560,11 +560,11 @@ def p_enum_constant(t):
             # We have a name instead of a constant, make sure it is defined
             if value not in name_dict:
                 error_occurred = True
-                print "ERROR - can't derefence %s at line %s" % (value, lineno)
+                print("ERROR - can't derefence %s at line %s" % (value, lineno))
             elif not isinstance(name_dict[value], const_info):
                 error_occurred = True
-                print "ERROR - reference to %s at line %s is not a constant" %\
-                      (value, lineno)
+                print("ERROR - reference to %s at line %s is not a constant" %\
+                      (value, lineno))
             else:
                 info.positive = name_dict[value].positive
         t[0] = [info]
@@ -586,9 +586,9 @@ def p_error(t):
     global error_occurred
     error_occurred = True
     if t:
-        print "Syntax error at '%s' (lineno %d)" % (t.value, t.lineno)
+        print("Syntax error at '%s' (lineno %d)" % (t.value, t.lineno))
     else:
-        print "Syntax error: unexpectedly hit EOF"
+        print("Syntax error: unexpectedly hit EOF")
 
 #
 # RPC specific routines follow
@@ -596,7 +596,7 @@ def p_error(t):
 
 def p_program_def(t):
     '''program_def : PROGRAM ID LBRACE version_def version_def_list RBRACE EQUALS constant SEMI'''
-    print "Ignoring program %s = %s" % (t[2], t[8])
+    print("Ignoring program %s = %s" % (t[2], t[8]))
     global name_dict
     id = t[2]
     value = t[8]
@@ -641,7 +641,7 @@ def p_proc_firstarg(t):
 def p_type_specifier_list(t):
     '''type_specifier_list : COMMA type_specifier type_specifier_list
                            | empty'''
-    
+
 
 ##########################################################################
 #                                                                        #
@@ -666,8 +666,8 @@ def id_unique(id, name, lineno):
     if id in name_dict:
         global error_occurred
         error_occurred = True
-        print "ERROR - %s definition %s at line %s conflicts with %s" % \
-              (name, id, lineno, name_dict[id])
+        print("ERROR - %s definition %s at line %s conflicts with %s" % \
+              (name, id, lineno, name_dict[id]))
         return False
     else:
         return True
@@ -718,7 +718,7 @@ class Info(object):
 
     def const_output(self):
         return None
-    
+
     def type_output(self):
         return None
 
@@ -819,7 +819,7 @@ class Info(object):
                         (prefix, self.id)
                 if self.len is not None:
                     limit = "%sif len(data) > %s:\n" \
-                            "%s%sraise XDRError, 'array length too long'\n" %\
+                            "%s%sraise XDRError('array length too long')\n" %\
                             (prefix, self.fullname(self.len), prefix, varindent)
                     array = limit + array
         else:
@@ -846,19 +846,19 @@ class Info(object):
                          (prefix, newdata, self.id)
                 if self.len is not None:
                     limit = "%sif len(%s) > %s:\n" \
-                            "%s%sraise XDRError, 'array length too long'\n" %\
+                            "%s%sraise XDRError('array length too long')\n" %\
                             (prefix, newdata, self.fullname(self.len), prefix, indent)
                     array += limit
             newdata = 'data'
         else:
             subheader = array = varindent = ''
         return prefix+varindent, newdata, subheader, array
-        
+
     def packenum(self, prefix, data='data'):
         prefix, data, subheader, array = self._array_pack(prefix, data)
         varlist = ["const.%s" % l.id for l in self.body]
         check = "%sif self.check_enum and %s not in [%s]:\n" \
-                "%s%sraise XDRError, 'value=%%s not in enum %s' %% %s\n" % \
+                "%s%sraise XDRError('value=%%s not in enum %s' %% %s)\n" % \
                 (prefix, data, ', '.join(varlist),
                  prefix, indent, self.id, data)
         pack = check + "%sself.pack_int(%s)\n" % (prefix, data)
@@ -868,7 +868,7 @@ class Info(object):
         prefix, data, subheader, array = self._array_unpack(prefix, data)
         varlist = ["const.%s" % l.id for l in self.body]
         check = "%sif self.check_enum and %s not in [%s]:\n" \
-                "%s%sraise XDRError, 'value=%%s not in enum %s' %% %s\n" % \
+                "%s%sraise XDRError('value=%%s not in enum %s' %% %s)\n" % \
                 (prefix, data, ', '.join(varlist),
                  prefix, indent, self.id, data)
         unpack = "%s%s = self.unpack_int()\n" % (prefix, data)
@@ -908,7 +908,7 @@ class Info(object):
         if default != []:
             pack += default[0].packout(prefix + indent, data)
         else:
-            pack += "%s%sraise XDRError, 'bad switch=%%s' %% %s.%s\n" % \
+            pack += "%s%sraise XDRError('bad switch=%%s' %% %s.%s)\n" % \
                     (prefix, indent, data, switch.id)
         return subheader + pack + array
 
@@ -950,9 +950,9 @@ class Info(object):
 ##                       (prefix, indent, data, data, default[0].id)
 ##             unpack += arm
         else:
-            unpack += "%s%sraise XDRError, 'bad switch=%%s' %% %s.%s\n" % \
+            unpack += "%s%sraise XDRError('bad switch=%%s' %% %s.%s)\n" % \
                       (prefix, indent, data, switch.id)
-            
+
         return subheader + unpack + array
 
     def xdrbody(self, prefix=''):
@@ -977,7 +977,7 @@ class Info(object):
                         ''.join(["%s\n" % d.xdrout(prefix + indent)
                                  for d in self.body[-1].declarations])
         return body
-            
+
 class const_info(Info):
     """The result of 'CONST ID EQUALS constant SEMI' or inside of enum as
     'ID EQUALS value' """
@@ -988,13 +988,16 @@ class const_info(Info):
         self.lineno = self.sortno = lineno
         self.type = 'const'
         self.enum = enum
-        
+
     def __repr__(self):
         return "constant %s=%s at line %s" % (self.id, self.value, self.lineno)
 
+    def __lt__(self, other):
+        return self.sortno < other.sortno
+
     def xdrout(self, prefix=''):
         return "%s%s = %s" % (prefix, self.id, self.value)
-    
+
     def const_output(self):
         return "%s = %s\n" % (self.id, self.value)
 
@@ -1016,6 +1019,9 @@ class enum_info(Info):
         self.array = False
         self.parent = True
 
+    def __lt__(self, other):
+        return self.sortno < other.sortno
+
     def const_output(self):
         body = ''.join(["%s%s : '%s',\n" % (indent, l.value, l.id)
                         for l in self.body])
@@ -1029,7 +1035,7 @@ class enum_info(Info):
         header = "%sdef unpack_%s(self):\n" % (indent, self.id)
         return header + self.unpackenum(indent2) + \
                self._get_unpack_footer()
-        
+
 class struct_info(Info):
     """The result of 'TYPEDEF STRUCT <struct_body> ID <array> SEMI' or
     'STRUCT ID <struct_body> SEMI'
@@ -1048,6 +1054,9 @@ class struct_info(Info):
         self.array = False
         self.parent = True
 
+    def __lt__(self, other):
+        return self.sortno < other.sortno
+
     def type_output(self):
         comment = '%s# ' % indent
         xdrbody = self.xdrbody(comment)
@@ -1057,7 +1066,7 @@ class struct_info(Info):
         init = self.typeinit(varlist)
         repr = self.typerepr(varlist)
         pass_attr = self.pass_through(varlist)
-        return "class %s:\n%s%s\n%s%s\n" % \
+        return "class %s(object):\n%s%s\n%s%s\n" % \
                (self.id, xdrdef, init, pass_attr, repr)
 
     def pass_through(self, varlist):
@@ -1079,11 +1088,11 @@ class struct_info(Info):
                    (indent, indent2, candidates[0].id)
         else:
             return ''
-        
+
     def pack_output(self):
         header = self._get_pack_header()
         return header + self.packstruct(indent2)
-        
+
     def unpack_output(self):
         header = "%sdef unpack_%s(self):\n" % (indent, self.id)
         return header + self.unpackstruct(indent2) + \
@@ -1106,6 +1115,9 @@ class union_info(Info):
         self.type = 'union'
         self.array = False
         self.parent = True
+
+    def __lt__(self, other):
+        return self.sortno < other.sortno
 
     def union_getattr(self, prefix=indent):
         return "%sdef __getattr__(self, attr):\n"\
@@ -1149,7 +1161,7 @@ class union_info(Info):
             varlist += [l for l in c.declarations if l.type != 'void']
         init = self.typeinit(varlist)
         repr = self.typerepr(varlist)
-        return "class %s:\n%s%s\n%s\n%s\n%s\n" % \
+        return "class %s(object):\n%s%s\n%s\n%s\n%s\n" % \
                (self.id, xdrdef, init, self.union_switch(),
                 self.union_getattr(), repr)
 
@@ -1173,6 +1185,9 @@ class type_info(Info):
             self.len = None
             self.fixed = False
         self.parent = False
+
+    def __lt__(self, other):
+        return self.sortno < other.sortno
 
     def __str__(self):
         return "%s %s at line %s" % (self.type, self.id, self.lineno)
@@ -1198,14 +1213,14 @@ class type_info(Info):
             x.len = self.len
             x.fixed = self.fixed
         return x
-        
+
     def xdrout(self, prefix=''):
         if self.type == 'void':
             return "%svoid;" % prefix
         elif self.type == 'enum':
             body = self.xdrbody(prefix)
             name = "%senum {\n%s%s}" % (prefix, body, prefix)
-            
+
         elif self.type == 'struct':
             body = self.xdrbody(prefix)
             name = "%sstruct {\n%s%s}" % (prefix, body, prefix)
@@ -1220,7 +1235,7 @@ class type_info(Info):
 
     def packout(self, prefix='', data='data'):
         check = "%sif %s.%s is None:\n" \
-                "%s%sraise TypeError, '%s.%s == None'\n" % \
+                "%s%sraise TypeError('%s.%s == None')\n" % \
                 (prefix, data, self.id, prefix, indent, data, self.id)
         if self.type == 'void':
             return prefix + 'pass\n'
@@ -1260,7 +1275,7 @@ class type_info(Info):
                     return "%s = %s\n" % (self.id, self.type)
                 elif cast.type == "enum":
                     return "%s = const.%s\n" % (self.id, self.type)
-        
+
     def pack_output(self):
         if not self.array:
             return "%spack_%s = pack_%s\n" % (indent, self.id, self.type)
@@ -1279,8 +1294,8 @@ class type_info(Info):
             limit = ''
         else:
             limit = "%sif len(%s) > %s and self.check_array:\n" \
-                    "%s%sraise XDRError, " \
-                    "'array length too long for %s'\n" % \
+                    "%s%sraise XDRError(" \
+                    "'array length too long for %s')\n" % \
                     (prefix, data, self.fullname(self.len), prefix, indent, data)
         if self.fixed:
             fixchar = 'f'
@@ -1297,14 +1312,14 @@ class type_info(Info):
         pack = "%sself.pack_%s%s(%s%s%s)\n" % \
                (prefix, fixchar, type, fixnum, data, packer)
         return limit + pack
-        
+
     def _unpack_array(self, prefix, data='data'):
         if self.fixed or self.len is None:
             limit = ''
         else:
             limit = "%sif len(%s) > %s and self.check_array:\n" \
-                    "%s%sraise XDRError, " \
-                    "'array length too long for %s'\n" % \
+                    "%s%sraise XDRError(" \
+                    "'array length too long for %s')\n" % \
                     (prefix, data, self.fullname(self.len), prefix, indent, data)
         if self.fixed:
             fixchar = 'f'
@@ -1322,9 +1337,9 @@ class type_info(Info):
         pack = "%s%s = self.unpack_%s%s(%s)\n" % \
                (prefix, data, fixchar, type, ', '.join(fixnum+packer))
         return pack + limit
-        
-     
-        
+
+
+
 ##########################################################################
 #                                                                        #
 #                          Main Loop                                     #
@@ -1339,8 +1354,8 @@ allow_attr_passthrough = True # Option which allows substructure attrs to
                               # be referenced directly, in cases where there
                               # is a unique substructure to search.
 pack_header = """\
-import %s as const
-import %s as types
+from . import %s as const
+from . import %s as types
 import xdrlib
 from xdrlib import Error as XDRError
 
@@ -1391,7 +1406,7 @@ def run(infile, filters=True, pass_attrs=True, debug=False):
     global use_filters, allow_attr_passthrough
     use_filters = filters
     allow_attr_passthrough = pass_attrs
-    print "Input file is", infile
+    print("Input file is", infile)
 
     # Create output file names (without .py)
     global constants_file, types_file, packer_file
@@ -1399,8 +1414,8 @@ def run(infile, filters=True, pass_attrs=True, debug=False):
     constants_file = name_base + "_const"
     types_file = name_base + "_type"
     packer_file = name_base + "_pack"
-    print "Will use output files %s.py, %s.py, and %s.py" % \
-          (constants_file, types_file, packer_file)
+    print("Will use output files %s.py, %s.py, and %s.py" % \
+          (constants_file, types_file, packer_file))
 
     # Parse the input data with yacc
     global name_dict
@@ -1414,26 +1429,25 @@ def run(infile, filters=True, pass_attrs=True, debug=False):
 
     if error_occurred:
         print
-        print "Error occurred, did not write output files"
+        print("Error occurred, did not write output files")
         return 1
 
     comment_string = "# Generated by rpcgen.py from %s on %s\n" % \
                      (infile, time.asctime())
-    const_fd = file(constants_file + ".py", "w")
+    const_fd = open(constants_file + ".py", "w")
     const_fd.write(comment_string)
-    type_fd = file(types_file + ".py", "w")
+    type_fd = open(types_file + ".py", "w")
     type_fd.write(comment_string)
-    type_fd.write("import %s as const\n" % constants_file)
-    pack_fd = file(packer_file + ".py", "w")
+    type_fd.write("from . import %s as const\n" % constants_file)
+    pack_fd = open(packer_file + ".py", "w")
     pack_fd.write(comment_string)
     pack_fd.write(pack_header % (constants_file, types_file))
     pack_fd.write(pack_init % name_base.upper())
     pack_fd.write(packer_start)
 
-    type_list = name_dict.values()
-    type_list.sort()
+    type_list = sorted(name_dict.values())
     for value in type_list:
-        #print value
+        #print(value)
         output = value.const_output()
         if output is not None:
             #const_fd.write("# **** %s ****\n" % value.id)
@@ -1454,7 +1468,7 @@ def run(infile, filters=True, pass_attrs=True, debug=False):
         if output is not None:
             pack_fd.write(output)
             pack_fd.write('\n')
-            
+
     const_fd.close()
     type_fd.close()
     pack_fd.close()
@@ -1465,7 +1479,7 @@ def run(infile, filters=True, pass_attrs=True, debug=False):
 #
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print "Usage: %s <filename>" % sys.argv[0]
+        print("Usage: %s <filename>" % sys.argv[0])
         sys.exit(1)
 
     run(sys.argv[1])

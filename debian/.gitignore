@@ -1,0 +1,13 @@
+changelog
+python-vxi11/
+python3-vxi11/
+python-vxi11.docs
+python3-vxi11.docs
+*.log
+*.substvars
+files
+*.postinst.debhelper
+*.prerm.debhelper
+.debhelper/
+*.swp
+html/

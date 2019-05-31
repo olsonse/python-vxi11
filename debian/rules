@@ -1,0 +1,47 @@
+#!/usr/bin/make -f
+# debian/rules
+# -*- makefile -*-
+
+export DH_VERBOSE=1
+DH_VERBOSE = 1
+export PYBUILD_NAME=vxi11
+
+# see EXAMPLES in dpkg-buildflags(1) and read /usr/share/dpkg/*
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/default.mk
+
+# see FEATURE AREAS in dpkg-buildflags(1)
+#export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# see ENVIRONMENT in dpkg-buildflags(1)
+# package maintainers to append CFLAGS
+#export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
+# package maintainers to append LDFLAGS
+#export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
+# main packaging script based on dh7 syntax
+%:
+	dh $@ --with python2,python3,sphinxdoc --buildsystem=pybuild
+
+build clean binary :  $(CURDIR)/debian/changelog
+build : extra-docs
+	dh_auto_build
+	python3 -m sphinx $(CURDIR)/doc/ $(CURDIR)/debian/html
+
+#override_dh_auto_install:
+#	@echo "Installing Python(2) code"
+#	mkdir -p $(CURDIR)/debian/python-physical/usr/lib/python2.7/dist-packages/
+#	cp -R    $(CURDIR)/python/physical \
+#		 $(CURDIR)/debian/python-physical/usr/lib/python2.7/dist-packages/
+
+$(CURDIR)/debian/changelog : $(CURDIR)/debian/mk_changelog
+	$(CURDIR)/debian/mk_changelog > $(CURDIR)/debian/changelog
+
+override_dh_compress:
+	dh_compress -X.py
+
+extra-docs :
+	@for DIR in examples/ debian/html/ ; do \
+		echo "$$DIR" > $(CURDIR)/debian/python-$(PYBUILD_NAME).docs; \
+		echo "$$DIR" > $(CURDIR)/debian/python3-$(PYBUILD_NAME).docs; \
+	done;

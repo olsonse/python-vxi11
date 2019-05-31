@@ -1,0 +1,78 @@
+Source: python-vxi11
+Section: universe/embedded
+Priority: optional
+Build-Depends: debhelper (>= 9), dh-python,
+ python-all (>=2.6.6-3~), python3-all (>=3.2), python3-sphinx, python-ply
+Maintainer: Spencer E. Olson <olsonse@umich.edu>
+Standards-Version: 3.9.2
+X-Python-Version: >= 2.7
+XS-Python-Version: >= 2.7
+X-Python3-Version: >= 3.2
+XS-Python3-Version: >= 3.2
+
+# Package: python-rpc
+# Architecture: all
+# Provides: ${python:Provides}
+# Depends: ${python:Depends}, ${python:Versions}, ${misc:Depends}, python-ply
+# Suggests: python-gssapi
+# Description: GSS-enabled RPC client and server
+#  .
+#  This package contains a Python implementation of Sun RPC for both server and
+#  client.  This is mostly a copy from a portion of the pynfs project at the
+#  University of Michigan's Center for Information Technology Integration
+#  (CITI--http://www.citi.umich.edu/projects/nfsv4/pynfs/).
+# 
+# Package: python3-rpc
+# Architecture: all
+# #Provides: ${python:Provides}
+# Depends: ${python3:Depends}, ${misc:Depends}, python3-ply
+# Suggests: python3-gssapi
+# Description: GSS-enabled RPC client and server
+#  .
+#  This package contains a Python implementation of Sun RPC for both server and
+#  client.  This is mostly a copy from a portion of the pynfs project at the
+#  University of Michigan's Center for Information Technology Integration
+#  (CITI--http://www.citi.umich.edu/projects/nfsv4/pynfs/).
+# 
+# 
+# Package: python-portmap
+# Architecture: all
+# Provides: ${python:Provides}
+# Depends: ${python:Depends}, ${python:Versions}, ${misc:Depends}, python-rpc
+# Description: Portmap client for Python
+#  .
+#  This package contains a Python implementation of a Sun RPC Portmap client.
+# 
+# Package: python3-portmap
+# Architecture: all
+# #Provides: ${python:Provides}
+# Depends: ${python3:Depends}, ${misc:Depends}, python3-rpc
+# Description: Portmap client for Python
+#  .
+#  This package contains a Python implementation of a Sun RPC Portmap client.
+
+
+Package: python-vxi11
+Architecture: all
+Provides: ${python:Provides}
+Depends: ${python:Depends}, ${python:Versions}, ${misc:Depends},
+ ${sphinxdoc:Depends}, python-ply
+#, python-portmap
+Built-Using: ${sphinxdoc:Built-Using}
+Suggests: python-gssapi
+Description: VXI-11 for Python.
+ .
+ This package contains a Python implementation of the industry standard VXI-11
+ protocol.
+
+Package: python3-vxi11
+Architecture: all
+#Provides: ${python3:Provides}
+Depends: ${python3:Depends}, ${misc:Depends}, ${sphinxdoc:Depends}, python3-ply
+#, python3-portmap
+Built-Using: ${sphinxdoc:Built-Using}
+Suggests: python3-gssapi
+Description: VXI-11 for Python.
+ .
+ This package contains a Python implementation of the industry standard VXI-11
+ protocol.

@@ -1,1 +1,5 @@
 *.pyc
+.pybuild
+*.swp
+build/
+vxi11.egg-info/

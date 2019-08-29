@@ -39,7 +39,7 @@ class TDS5000B(vxi11.Link):
 
     def waitforACQStop(self):
         """waiting (specifically for the TDS5000) to stop acquisitions."""
-        while self.query('ACQUIRE:STATE?').strip() == '1':
+        while self.query('ACQUIRE:STATE?').decode().strip() == '1':
             time.sleep(0.1);
 
     def getCurve(self, channel=None):
@@ -49,10 +49,10 @@ class TDS5000B(vxi11.Link):
         self.send('WFMOUTPRE:BYT_NR 4')
         self.send('DATA:START 1')
         self.send('DATA:STOP 100000000')
-        y = r_[self.query('CURVE?').strip().split(',')].astype(double)
-        y0 = double(self.query('WFMOUTPRE:YOFF?').strip())
-        V_dy = double(self.query('WFMOUTPRE:YMULT?').strip())
-        dx = double(self.query('WFMOUTPRE:XINCR?').strip())
+        y = r_[self.query('CURVE?').decode().strip().split(',')].astype(double)
+        y0 = double(self.query('WFMOUTPRE:YOFF?').decode().strip())
+        V_dy = double(self.query('WFMOUTPRE:YMULT?').decode().strip())
+        dx = double(self.query('WFMOUTPRE:XINCR?').decode().strip())
         y = (y - y0) * V_dy
         x = (r_[0:len(y)]) * dx
         return x,y
@@ -63,7 +63,7 @@ class TDS5000B(vxi11.Link):
 
     def getStatusByte(self):
         """Get the status byte of the TDS5000B."""
-        return int(self.query('*ESR?').strip())
+        return int(self.query('*ESR?').decode().strip())
 
     def printErrors(self, prefix=''):
         """Print the errors pending on the scope.  Return whether errors occurred."""

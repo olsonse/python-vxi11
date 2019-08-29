@@ -7,6 +7,8 @@ specific instruments.  Each of these tools simplifies/organizes routine
 Tool            Instrument
 ----------------------------------------------------
 TDS5000B        Tektronix TDS5000B oscilloscope
+MS9740A         Anritsu Optical Spectrum Analyzer
+MSO5074         Rigol MSO5074 Oscilloscope
 
 A sample program that stores traces from the scope to file in a loop.
 
@@ -32,10 +34,12 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 from . import tektronix
 from . import anritsu
+from . import rigol
 
 generators = [
   anritsu,
   tektronix,
+  rigol,
 ]
 
 def get(idn):

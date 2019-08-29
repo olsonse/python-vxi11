@@ -55,8 +55,7 @@ XS-Python3-Version: >= 3.2
 Package: python-vxi11
 Architecture: all
 Provides: ${python:Provides}
-Depends: ${python:Depends}, ${python:Versions}, ${misc:Depends},
- ${sphinxdoc:Depends}, python-ply
+Depends: ${python:Depends}, ${misc:Depends}, ${sphinxdoc:Depends}, python-ply
 #, python-portmap
 Built-Using: ${sphinxdoc:Built-Using}
 Suggests: python-gssapi
